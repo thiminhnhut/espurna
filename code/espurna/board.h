@@ -6,7 +6,8 @@ BOARD MODULE
 
 #pragma once
 
-String getIdentifier();
+const String& getChipId();
+const String& getIdentifier();
 
 String getEspurnaModules();
 String getEspurnaOTAModules();
@@ -14,5 +15,6 @@ String getEspurnaSensors();
 
 String getEspurnaWebUI();
 
-int getBoardId();
+bool isEspurnaCore();
 
+int getBoardId();

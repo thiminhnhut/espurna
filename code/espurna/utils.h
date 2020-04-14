@@ -8,6 +8,8 @@ Copyright (C) 2017-2019 by Xose Pérez <xose dot perez at gmail dot com>
 
 #pragma once
 
+PROGMEM const char pstr_unknown[] = "UNKNOWN";
+
 #define INLINE inline __attribute__((always_inline))
 
 extern "C" uint32_t _SPIFFS_start;
@@ -16,9 +18,9 @@ extern "C" uint32_t _SPIFFS_end;
 void setDefaultHostname();
 
 void setBoardName();
-String getBoardName();
-String getAdminPass();
 
+const String& getDevice();
+const String& getManufacturer();
 const String& getCoreVersion();
 const String& getCoreRevision();
 

@@ -17,8 +17,10 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 #include <Schedule.h>
 #include <ESPAsyncTCP.h>
 
-#include "system.h"
+#include "mqtt.h"
 #include "ota.h"
+#include "system.h"
+#include "terminal.h"
 
 #include "libs/URL.h"
 
@@ -144,7 +146,7 @@ void _otaClientOnConnect(void* arg, AsyncClient* client) {
 
     #if ASYNC_TCP_SSL_ENABLED
         const auto check = getSetting("otaScCheck", OTA_SECURE_CLIENT_CHECK);
-        if ((check == SECURE_CLIENT_CHECK_FINGERPRINT) && (443 == _ota_url->port)) {
+        if ((check == SECURE_CLIENT_CHECK_FINGERPRINT) && (443 == ota_client->url.port)) {
             uint8_t fp[20] = {0};
             sslFingerPrintArray(getSetting("otaFP", OTA_FINGERPRINT).c_str(), fp);
             SSL * ssl = client->getSSL();

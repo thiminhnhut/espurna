@@ -8,33 +8,67 @@ Copyright (C) 2017-2019 by Xose Pérez <xose dot perez at gmail dot com>
 
 #include <limits>
 
-#include <Ticker.h>
-#include <TimeLib.h>
+#include "config/buildtime.h"
 
+#include "board.h"
+#include "mqtt.h"
+#include "ntp.h"
 #include "utils.h"
+
 #include "libs/HeapStats.h"
+
+//--------------------------------------------------------------------------------
+// Reset reasons
+//--------------------------------------------------------------------------------
+
+PROGMEM const char custom_reset_hardware[] = "Hardware button";
+PROGMEM const char custom_reset_web[] = "Reboot from web interface";
+PROGMEM const char custom_reset_terminal[] = "Reboot from terminal";
+PROGMEM const char custom_reset_mqtt[] = "Reboot from MQTT";
+PROGMEM const char custom_reset_rpc[] = "Reboot from RPC";
+PROGMEM const char custom_reset_ota[] = "Reboot after successful OTA update";
+PROGMEM const char custom_reset_http[] = "Reboot from HTTP";
+PROGMEM const char custom_reset_nofuss[] = "Reboot after successful NoFUSS update";
+PROGMEM const char custom_reset_upgrade[] = "Reboot after successful web update";
+PROGMEM const char custom_reset_factory[] = "Factory reset";
+PROGMEM const char* const custom_reset_string[] = {
+    custom_reset_hardware, custom_reset_web, custom_reset_terminal,
+    custom_reset_mqtt, custom_reset_rpc, custom_reset_ota,
+    custom_reset_http, custom_reset_nofuss, custom_reset_upgrade,
+    custom_reset_factory
+};
 
 void setDefaultHostname() {
     if (strlen(HOSTNAME) > 0) {
-        setSetting("hostname", HOSTNAME);
+        setSetting("hostname", F(HOSTNAME));
     } else {
         setSetting("hostname", getIdentifier());
     }
 }
 
-void setBoardName() {
-    #ifndef ESPURNA_CORE
-        setSetting("boardName", DEVICE_NAME);
-    #endif
+const String& getDevice() {
+    static const String value(F(DEVICE));
+    return value;
+}
+
+const String& getManufacturer() {
+    static const String value(F(MANUFACTURER));
+    return value;
 }
 
 String getBoardName() {
-    static const String defaultValue(DEVICE_NAME);
+    static const String defaultValue(F(DEVICE_NAME));
     return getSetting("boardName", defaultValue);
 }
 
+void setBoardName() {
+    if (!isEspurnaCore()) {
+        setSetting("boardName", F(DEVICE_NAME));
+    }
+}
+
 String getAdminPass() {
-    static const String defaultValue(ADMIN_PASS);
+    static const String defaultValue(F(ADMIN_PASS));
     return getSetting("adminPass", defaultValue);
 }
 
@@ -79,8 +113,13 @@ unsigned long getHeartbeatInterval() {
 }
 
 String buildTime() {
-    #if NTP_SUPPORT
+    #if NTP_LEGACY_SUPPORT && NTP_SUPPORT
         return ntpDateTime(__UNIX_TIMESTAMP__);
+    #elif NTP_SUPPORT
+        constexpr const time_t ts = __UNIX_TIMESTAMP__;
+        tm timestruct;
+        gmtime_r(&ts, &timestruct);
+        return ntpDateTime(&timestruct);
     #else
         char buffer[20];
         snprintf_P(
@@ -179,12 +218,16 @@ namespace Heartbeat {
 }
 
 void infoUptime() {
-    auto uptime [[gnu::unused]] = getUptime();
-    DEBUG_MSG_P(
-        PSTR("Uptime: %02dd %02dh %02dm %02ds\n"),
-        elapsedDays(uptime), numberOfHours(uptime),
-        numberOfMinutes(uptime), numberOfSeconds(uptime)
-    );
+    const auto uptime [[gnu::unused]] = getUptime();
+    #if NTP_SUPPORT
+        DEBUG_MSG_P(
+            PSTR("[MAIN] Uptime: %02dd %02dh %02dm %02ds\n"),
+            elapsedDays(uptime), numberOfHours(uptime),
+            numberOfMinutes(uptime), numberOfSeconds(uptime)
+        );
+    #else
+        DEBUG_MSG_P(PSTR("[MAIN] Uptime: %lu seconds\n"), uptime);
+    #endif // NTP_SUPPORT
 }
 
 void heartbeat() {

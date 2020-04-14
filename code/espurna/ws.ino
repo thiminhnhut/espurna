@@ -8,15 +8,14 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 
 #if WEB_SUPPORT
 
-#include <ESPAsyncTCP.h>
-#include <ESPAsyncWebServer.h>
-#include <ArduinoJson.h>
-#include <Ticker.h>
 #include <vector>
 
 #include "system.h"
+#include "web.h"
+#include "utils.h"
 #include "ws.h"
 #include "ws_internal.h"
+
 #include "libs/WebSocketIncommingBuffer.h"
 
 AsyncWebSocket _ws("/ws");
@@ -233,6 +232,11 @@ void _wsParse(AsyncWebSocketClient *client, uint8_t * payload, size_t length) {
     const char* action = root["action"];
     if (action) {
 
+        if (strcmp(action, "ping") == 0) {
+            wsSend_P(client_id, PSTR("{\"pong\": 1}"));
+            return;
+        }
+
         DEBUG_MSG_P(PSTR("[WEBSOCKET] Requested action: %s\n"), action);
 
         if (strcmp(action, "reboot") == 0) {
@@ -384,9 +388,6 @@ bool _wsOnKeyCheck(const char * key, JsonVariant& value) {
 }
 
 void _wsOnConnected(JsonObject& root) {
-    char chipid[7];
-    snprintf_P(chipid, sizeof(chipid), PSTR("%06X"), ESP.getChipId());
-
     root["webMode"] = WEB_MODE_NORMAL;
 
     root["app_name"] = APP_NAME;
@@ -395,12 +396,12 @@ void _wsOnConnected(JsonObject& root) {
     #if defined(APP_REVISION)
         root["app_revision"] = APP_REVISION;
     #endif
-    root["manufacturer"] = MANUFACTURER;
-    root["chipid"] = String(chipid);
+    root["device"] = getDevice().c_str();
+    root["manufacturer"] = getManufacturer().c_str();
+    root["chipid"] = getChipId().c_str();
     root["mac"] = WiFi.macAddress();
     root["bssid"] = WiFi.BSSIDstr();
     root["channel"] = WiFi.channel();
-    root["device"] = DEVICE;
     root["hostname"] = getSetting("hostname");
     root["desc"] = getSetting("desc");
     root["network"] = getNetwork();
@@ -410,7 +411,6 @@ void _wsOnConnected(JsonObject& root) {
     root["sdk"] = ESP.getSdkVersion();
     root["core"] = getCoreVersion();
 
-    root["btnDelay"] = getSetting("btnDelay", BUTTON_DBLCLICK_DELAY);
     root["webPort"] = getSetting("webPort", WEB_PORT);
     root["wsAuth"] = getSetting("wsAuth", 1 == WS_AUTHENTICATION);
     root["hbMode"] = getSetting("hbMode", HEARTBEAT_MODE);

@@ -21,18 +21,47 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include "config/all.h"
 
+#include <functional>
+#include <algorithm>
+#include <limits>
+#include <vector>
+#include <memory>
+
 #include "board.h"
+#include "compat.h"
+#include "storage_eeprom.h"
+#include "gpio.h"
+#include "settings.h"
+#include "system.h"
+#include "terminal.h"
+#include "utils.h"
+#include "wifi.h"
+
+#include "alexa.h"
+#include "api.h"
 #include "broker.h"
 #include "button.h"
 #include "debug.h"
+#include "domoticz.h"
+#include "homeassistant.h"
+#include "i2c.h"
+#include "ir.h"
 #include "led.h"
+#include "mqtt.h"
+#include "ntp.h"
+#include "ota.h"
 #include "relay.h"
-#include "settings.h"
-#include "system.h"
+#include "rfm69.h"
+#include "rpc.h"
+#include "rpnrules.h"
+#include "rtcmem.h"
+#include "sensor.h"
+#include "thermostat.h"
 #include "tuya.h"
-#include "utils.h"
-#include "wifi.h"
+#include "web.h"
 #include "ws.h"
+
+#include "libs/URL.h"
 #include "libs/HeapStats.h"
 
 using void_callback_f = void (*)();
@@ -156,6 +185,9 @@ void setup() {
         #if DEBUG_WEB_SUPPORT
             debugWebSetup();
         #endif
+        #if OTA_WEB_SUPPORT
+            otaWebSetup();
+        #endif
     #endif
     #if API_SUPPORT
         apiSetup();
@@ -165,7 +197,9 @@ void setup() {
     #if LIGHT_PROVIDER != LIGHT_PROVIDER_NONE
         lightSetup();
     #endif
-    relaySetup();
+    #if RELAY_SUPPORT
+        relaySetup();
+    #endif
     #if BUTTON_SUPPORT
         buttonSetup();
     #endif

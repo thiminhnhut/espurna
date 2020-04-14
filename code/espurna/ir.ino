@@ -48,22 +48,16 @@ Raw messages:
 
 #if IR_SUPPORT
 
+#include "ir.h"
+#include "mqtt.h"
 #include "relay.h"
 
-#include <IRremoteESP8266.h>
-
 #if defined(IR_RX_PIN)
-
-    #include <IRrecv.h>
     IRrecv _ir_receiver(IR_RX_PIN, IR_BUFFER_SIZE, IR_TIMEOUT, true);
-
     decode_results _ir_results;
-
 #endif // defined(IR_RX_PIN)
 
 #if defined(IR_TX_PIN)
-
-    #include <IRsend.h>
     IRsend _ir_sender(IR_TX_PIN);
 
     #if IR_USE_RAW
@@ -286,45 +280,51 @@ void _irProcess(unsigned char type, unsigned long code) {
             uint32_t button_code = pgm_read_dword(&IR_BUTTON[i][0]);
             if (code == button_code) {
 
-                unsigned long button_mode = pgm_read_dword(&IR_BUTTON[i][1]);
+                unsigned long button_action = pgm_read_dword(&IR_BUTTON[i][1]);
                 unsigned long button_value = pgm_read_dword(&IR_BUTTON[i][2]);
 
-                if (button_mode == IR_BUTTON_MODE_STATE) {
-                    relayStatus(0, button_value);
-                }
+                switch (button_action) {
 
-                if (button_mode == IR_BUTTON_MODE_TOGGLE) {
-                    relayToggle(button_value);
-                }
+                #if RELAY_SUPPORT
+                    case IR_BUTTON_ACTION_STATE:
+                        relayStatus(0, button_value);
+                        break;
+
+                    case IR_BUTTON_ACTION_TOGGLE:
+                        relayToggle(button_value);
+                        break;
+                #endif // RELAY_SUPPORT == 1
 
                 #if LIGHT_PROVIDER != LIGHT_PROVIDER_NONE
 
-                    if (button_mode == IR_BUTTON_MODE_BRIGHTER) {
+                    case IR_BUTTON_ACTION_BRIGHTER:
                         lightBrightnessStep(button_value ? 1 : -1);
+                        lightUpdate(true, true);
                         nice_delay(150); //debounce
-                    }
+                        break;
 
-                    if (button_mode == IR_BUTTON_MODE_RGB) {
+                    case IR_BUTTON_ACTION_RGB:
                         lightColor(button_value);
-                    }
+                        lightUpdate(true, true);
+                        break;
 
-                    /*
-                    #if LIGHT_PROVIDER == LIGHT_PROVIDER_FASTLED
-                        if (button_mode == IR_BUTTON_MODE_EFFECT) {
-                            _buttonAnimMode(button_value);
-                        }
-                    #endif
-                    */
-
-                    /*
-                    if (button_mode == IR_BUTTON_MODE_HSV) {
-                        lightColor(button_value);
-                    }
-                    */
-
-                    lightUpdate(true, true);
-
+                /*
+                #if LIGHT_PROVIDER == LIGHT_PROVIDER_FASTLED
+                    case IR_BUTTON_ACTION_EFFECT:
+                        _buttonAnimMode(button_value);
+                        break;
                 #endif
+                */
+
+                /*
+                    case IR_BUTTON_ACTION_HSV:
+                        lightColor(button_value);
+                        break;
+                */
+
+                }
+
+                #endif // LIGHT_PROVIDER != LIGHT_PROVIDER_NONE
 
                 found = true;
                 break;
