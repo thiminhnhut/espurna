@@ -59,50 +59,64 @@ class CSE7766Sensor : public BaseEmonSensor {
 
         // ---------------------------------------------------------------------
 
-        void expectedCurrent(double expected) {
+        void expectedCurrent(double expected) override {
             if ((expected > 0) && (_current > 0)) {
                 _ratioC = _ratioC * (expected / _current);
             }
         }
 
-        void expectedVoltage(unsigned int expected) {
+        void expectedVoltage(unsigned int expected) override {
             if ((expected > 0) && (_voltage > 0)) {
                 _ratioV = _ratioV * (expected / _voltage);
             }
         }
 
-        void expectedPower(unsigned int expected) {
+        void expectedPower(unsigned int expected) override {
             if ((expected > 0) && (_active > 0)) {
                 _ratioP = _ratioP * (expected / _active);
             }
         }
 
-        void setCurrentRatio(double value) {
+        double defaultCurrentRatio() const override {
+            return 1.0;
+        }
+
+        double defaultVoltageRatio() const override {
+            return 1.0;
+        }
+
+        double defaultPowerRatio() const override {
+            return 1.0;
+        }
+
+        void setCurrentRatio(double value) override {
             _ratioC = value;
         };
 
-        void setVoltageRatio(double value) {
+        void setVoltageRatio(double value) override {
             _ratioV = value;
         };
 
-        void setPowerRatio(double value) {
+        void setPowerRatio(double value) override {
             _ratioP = value;
         };
 
-        double getCurrentRatio() {
+        double getCurrentRatio() override {
             return _ratioC;
         };
 
-        double getVoltageRatio() {
+        double getVoltageRatio() override {
             return _ratioV;
         };
 
-        double getPowerRatio() {
+        double getPowerRatio() override {
             return _ratioP;
         };
 
-        void resetCalibration() {
-            _ratioC = _ratioV = _ratioP = 1.0;
+        void resetRatios() override {
+            _ratioC = defaultCurrentRatio();
+            _ratioV = defaultVoltageRatio();
+            _ratioP = defaultPowerRatio();
         }
 
         // ---------------------------------------------------------------------
@@ -112,14 +126,20 @@ class CSE7766Sensor : public BaseEmonSensor {
         // Initialization method, must be idempotent
         void begin() {
 
+            resetRatios();
+
             if (!_dirty) return;
 
             if (_serial) delete _serial;
 
-            if (1 == _pin_rx) {
+            if (3 == _pin_rx) {
                 Serial.begin(CSE7766_BAUDRATE);
+            } else if (13 == _pin_rx) {
+                Serial.begin(CSE7766_BAUDRATE);
+                Serial.flush();
+                Serial.swap();
             } else {
-                _serial = new SoftwareSerial(_pin_rx, SW_SERIAL_UNUSED_PIN, _inverted, 32);
+                _serial = new SoftwareSerial(_pin_rx, -1, _inverted);
                 _serial->enableIntTx(false);
                 _serial->begin(CSE7766_BAUDRATE);
             }
@@ -132,7 +152,7 @@ class CSE7766Sensor : public BaseEmonSensor {
         // Descriptive name of the sensor
         String description() {
             char buffer[28];
-            if (1 == _pin_rx) {
+            if (_serial_is_hardware()) {
                 snprintf(buffer, sizeof(buffer), "CSE7766 @ HwSerial");
             } else {
                 snprintf(buffer, sizeof(buffer), "CSE7766 @ SwSerial(%u,NULL)", _pin_rx);
@@ -141,7 +161,7 @@ class CSE7766Sensor : public BaseEmonSensor {
         }
 
         // Descriptive name of the slot # index
-        String slot(unsigned char index) {
+        String description(unsigned char index) {
             return description();
         };
 
@@ -352,8 +372,12 @@ class CSE7766Sensor : public BaseEmonSensor {
 
         // ---------------------------------------------------------------------
 
+        bool _serial_is_hardware() {
+            return (3 == _pin_rx) || (13 == _pin_rx);
+        }
+
         bool _serial_available() {
-            if (1 == _pin_rx) {
+            if (_serial_is_hardware()) {
                 return Serial.available();
             } else {
                 return _serial->available();
@@ -361,7 +385,7 @@ class CSE7766Sensor : public BaseEmonSensor {
         }
 
         void _serial_flush() {
-            if (1 == _pin_rx) {
+            if (_serial_is_hardware()) {
                 return Serial.flush();
             } else {
                 return _serial->flush();
@@ -369,7 +393,7 @@ class CSE7766Sensor : public BaseEmonSensor {
         }
 
         uint8_t _serial_read() {
-            if (1 == _pin_rx) {
+            if (_serial_is_hardware()) {
                 return Serial.read();
             } else {
                 return _serial->read();
@@ -378,7 +402,7 @@ class CSE7766Sensor : public BaseEmonSensor {
 
         // ---------------------------------------------------------------------
 
-        unsigned int _pin_rx = CSE7766_PIN;
+        int _pin_rx = CSE7766_RX_PIN;
         bool _inverted = CSE7766_PIN_INVERSE;
         SoftwareSerial * _serial = NULL;
 
@@ -387,9 +411,9 @@ class CSE7766Sensor : public BaseEmonSensor {
         double _voltage = 0;
         double _current = 0;
 
-        double _ratioV = 1.0;
-        double _ratioC = 1.0;
-        double _ratioP = 1.0;
+        double _ratioV;
+        double _ratioC;
+        double _ratioP;
 
         unsigned char _data[24];
 

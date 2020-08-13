@@ -79,7 +79,7 @@
 //------------------------------------------------------------------------------
 
 // UDP debug log
-// To receive the message son the destination computer use nc:
+// To receive the message on the destination computer use nc:
 // nc -ul 8113
 
 #ifndef DEBUG_UDP_SUPPORT
@@ -175,7 +175,23 @@
 #define TERMINAL_SUPPORT         1              // Enable terminal commands (0.97Kb)
 #endif
 
-#define TERMINAL_BUFFER_SIZE     128            // Max size for commands commands
+#ifndef TERMINAL_SHARED_BUFFER_SIZE
+#define TERMINAL_SHARED_BUFFER_SIZE     128     // Maximum size for command line, shared by the WebUI, Telnet and Serial
+#endif
+
+#ifndef TERMINAL_MQTT_SUPPORT
+#define TERMINAL_MQTT_SUPPORT       0       // MQTT Terminal support built in
+                                            // Depends on MQTT_SUPPORT and TERMINAL_SUPPORT commands being available
+#endif
+
+#ifndef TERMINAL_WEB_API_SUPPORT
+#define TERMINAL_WEB_API_SUPPORT    0       // Web server API Terminal support built in
+                                            // Depends on WEB_SUPPORT and TERMINAL_SUPPORT commands being available
+#endif
+
+#ifndef TERMINAL_WEB_API_PATH
+#define TERMINAL_WEB_API_PATH       "/api/cmd"
+#endif
 
 //------------------------------------------------------------------------------
 // SYSTEM CHECK
@@ -198,20 +214,9 @@
 // EEPROM
 //------------------------------------------------------------------------------
 
-#define EEPROM_SIZE             SPI_FLASH_SEC_SIZE  // EEPROM size in bytes (1 sector = 4096 bytes)
-
 //#define EEPROM_RORATE_SECTORS   2             // Number of sectors to use for EEPROM rotation
                                                 // If not defined the firmware will use a number based
                                                 // on the number of available sectors
-
-#define EEPROM_RELAY_STATUS     0               // Address for the relay status (1 byte)
-#define EEPROM_ENERGY_COUNT     1               // Address for the energy counter (4 bytes)
-#define EEPROM_CUSTOM_RESET     5               // Address for the reset reason (1 byte)
-#define EEPROM_CRASH_COUNTER    6               // Address for the crash counter (1 byte)
-#define EEPROM_MESSAGE_ID       7               // Address for the MQTT message id (4 bytes)
-#define EEPROM_ROTATE_DATA      11              // Reserved for the EEPROM_ROTATE library (3 bytes)
-#define EEPROM_DATA_END         14              // End of custom EEPROM data block
-
 
 #ifndef SAVE_CRASH_ENABLED
 #define SAVE_CRASH_ENABLED          1           // Save stack trace to EEPROM by default
@@ -400,6 +405,7 @@
                                                                        // BUTTON_EVENTS_SOURCE_GENERIC - GPIOs (virtual or real)
                                                                        // BUTTON_EVENTS_SOURCE_SONOFF_DUAL - hardware specific, drive buttons through serial connection
                                                                        // BUTTON_EVENTS_SOURCE_FOXEL_LIGHTFOX_DUAL - similar to Itead Sonoff Dual, hardware specific
+                                                                       // BUTTON_EVENTS_SOURCE_MCP23S08 - activate virtual button connected to gpio expander
 #endif
 
 //------------------------------------------------------------------------------
@@ -492,31 +498,48 @@
 // -----------------------------------------------------------------------------
 
 #ifndef WIFI_CONNECT_TIMEOUT
-#define WIFI_CONNECT_TIMEOUT        60000               // Connecting timeout for WIFI in ms
+#define WIFI_CONNECT_TIMEOUT        60000                  // Connecting timeout for WIFI in ms
 #endif
 
 #ifndef WIFI_RECONNECT_INTERVAL
-#define WIFI_RECONNECT_INTERVAL     180000              // If could not connect to WIFI, retry after this time in ms
+#define WIFI_RECONNECT_INTERVAL     180000                 // If could not connect to WIFI, retry after this time in ms
 #endif
 
 #ifndef WIFI_MAX_NETWORKS
-#define WIFI_MAX_NETWORKS           5                   // Max number of WIFI connection configurations
+#define WIFI_MAX_NETWORKS           5                      // Max number of WIFI connection configurations
 #endif
 
 #ifndef WIFI_AP_CAPTIVE
-#define WIFI_AP_CAPTIVE             1                   // Captive portal enabled when in AP mode
+#define WIFI_AP_CAPTIVE             1                      // Captive portal enabled when in AP mode
 #endif
 
-#ifndef WIFI_FALLBACK_APMODE
-#define WIFI_FALLBACK_APMODE        1                   // Fallback to AP mode if no STA connection
+#ifndef WIFI_AP_MODE
+#define WIFI_AP_MODE                WiFiApMode::Fallback   // By default, fallback to AP mode if no STA connection
+                                                           // Use WiFiApMode::Enabled to start it when the device boots
+                                                           // Use WiFiApMode::Disabled to disable AP mode completely
+#endif
+
+#ifndef WIFI_AP_SSID
+#define WIFI_AP_SSID                ""                     // (optional) Specify softAp SSID.
+                                                           // By default or when empty, hostname (or device identifier) is used instead.
+#endif
+
+#ifndef WIFI_AP_PASS
+#define WIFI_AP_PASS                ""                     // (optional) Specify softAp passphrase
+                                                           // By default or when empty, admin password is used instead.
+#endif
+
+#ifndef WIFI_AP_LEASES_SUPPORT
+#define WIFI_AP_LEASES_SUPPORT      0                      // (optional) Specify softAp MAC<->IP DHCP reservations
+                                                           // Use `set wifiApLease# MAC`, where MAC is a valid 12-byte HEX number without colons
 #endif
 
 #ifndef WIFI_SLEEP_MODE
-#define WIFI_SLEEP_MODE             WIFI_NONE_SLEEP     // WIFI_NONE_SLEEP, WIFI_LIGHT_SLEEP or WIFI_MODEM_SLEEP
+#define WIFI_SLEEP_MODE             WIFI_NONE_SLEEP        // WIFI_NONE_SLEEP, WIFI_LIGHT_SLEEP or WIFI_MODEM_SLEEP
 #endif
 
 #ifndef WIFI_SCAN_NETWORKS
-#define WIFI_SCAN_NETWORKS          1                   // Perform a network scan before connecting
+#define WIFI_SCAN_NETWORKS          1                      // Perform a network scan before connecting
 #endif
 
 // Optional hardcoded configuration (up to 5 networks, depending on WIFI_MAX_NETWORKS and espurna/wifi_config.h)
@@ -649,7 +672,7 @@
 #endif
 
 // ref: https://docs.espressif.com/projects/esp-idf/en/latest/api-reference/kconfig.html#config-lwip-esp-gratuitous-arp
-// ref: https://github.com/xoseperez/espurna/pull/1877#issuecomment-525612546 
+// ref: https://github.com/xoseperez/espurna/pull/1877#issuecomment-525612546
 //
 // Broadcast gratuitous ARP periodically to update ARP tables on the AP and all devices on the same network.
 // Helps to solve compatibility issues when ESP fails to timely reply to ARP requests, causing the device's ARP table entry to expire.
@@ -767,7 +790,6 @@
 #ifndef API_REAL_TIME_VALUES
 #define API_REAL_TIME_VALUES        0           // Show filtered/median values by default (0 => median, 1 => real time)
 #endif
-
 
 // -----------------------------------------------------------------------------
 // MDNS / LLMNR / NETBIOS / SSDP
@@ -1011,7 +1033,7 @@
 #endif
 
 #ifndef MQTT_SECURE_CLIENT_MFLN
-#define MQTT_SECURE_CLIENT_MFLN     SECURE_CLIENT_MFLN  // Use global MFLN setting by default 
+#define MQTT_SECURE_CLIENT_MFLN     SECURE_CLIENT_MFLN  // Use global MFLN setting by default
 #endif
 
 #ifndef MQTT_SECURE_CLIENT_INCLUDE_CA
@@ -1162,6 +1184,8 @@
 #define MQTT_TOPIC_IROUT            "irout"
 #define MQTT_TOPIC_OTA              "ota"
 #define MQTT_TOPIC_TELNET_REVERSE   "telnet_reverse"
+#define MQTT_TOPIC_CURTAIN          "curtain"
+#define MQTT_TOPIC_CMD              "cmd"
 
 // Light module
 #define MQTT_TOPIC_CHANNEL          "channel"
@@ -1756,6 +1780,14 @@
 
 #ifndef TUYA_SERIAL
 #define TUYA_SERIAL                 Serial
+#endif
+
+//--------------------------------------------------------------------------------
+// Support expander MCP23S08
+//--------------------------------------------------------------------------------
+
+#ifndef MCP23S08_SUPPORT
+#define MCP23S08_SUPPORT            0
 #endif
 
 // =============================================================================

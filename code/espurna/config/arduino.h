@@ -15,12 +15,15 @@
 //#define ALLTERCO_SHELLY1PM
 //#define ALLTERCO_SHELLY2
 //#define ALLTERCO_SHELLY25
+//#define AOYCOCR_X5P
 //#define ARILUX_AL_LC01
 //#define ARILUX_AL_LC02
 //#define ARILUX_AL_LC02_V14
 //#define ARILUX_AL_LC06
 //#define ARILUX_AL_LC11
 //#define ARILUX_E27
+//#define ARLEC_PB89HA
+//#define ARLEC_PC190HA
 //#define ARNIEX_SWIFITCH
 //#define AUTHOMETION_LYT8266
 //#define AVATTO_NAS_WR01W
@@ -50,6 +53,7 @@
 //#define GBLIFE_RGBW_SOCKET
 //#define GENERIC_8CH
 //#define GENERIC_AG_L4
+//#define GENERIC_AG_L4_V3
 //#define GENERIC_E14
 //#define GENERIC_ECH1560
 //#define GENERIC_ESP01S_DHT11_V10
@@ -69,6 +73,7 @@
 //#define HOMECUBE_16A
 //#define HUACANXING_H801
 //#define HUACANXING_H802
+//#define HUGOAI_AWP02L_N
 //#define HYKKER_SMART_HOME_POWER_PLUG
 //#define IKE_ESPIKE
 //#define INTERMITTECH_QUINLED
@@ -104,6 +109,7 @@
 //#define JANGOE_WIFI_RELAY_NO
 //#define JINVOO_VALVE_SM_AW713
 //#define JORGEGARCIA_WIFI_RELAYS
+//#define KINGART_CURTAIN_SWITCH
 //#define KMC_70011
 //#define KOGAN_SMARTER_HOME_PLUG_W_POW
 //#define LINGAN_SWA1
@@ -125,9 +131,10 @@
 //#define MAGICHOME_ZJ_WFMN_C_11
 //#define MANCAVEMADE_ESPLIVE
 //#define MAXCIO_WDE004
-//#define MAXCIO_WUS002S
 //#define MAXCIO_WUK007S
+//#define MAXCIO_WUS002S
 //#define MUVIT_IO_MIOBULB001
+//#define NEDIS_WIFIP310FWT
 //#define NEO_COOLCAM_NAS_WR01W
 //#define NEXETE_A19
 //#define NODEMCU_BASIC
@@ -137,6 +144,7 @@
 //#define OUKITEL_P1
 //#define PHYX_ESP12_RGB
 //#define PILOTAK_ESP_DIN_V1
+//#define PRODINO_WIFI
 //#define PSH_RGBW_CONTROLLER
 //#define PSH_WIFI_PLUG
 //#define PSH_WIFI_SENSOR
@@ -221,6 +229,7 @@
 //#define BH1750_SUPPORT         1
 //#define BMP180_SUPPORT         1
 //#define BMX280_SUPPORT         1
+//#define BME680_SUPPORT         1
 //#define CSE7766_SUPPORT        1
 //#define DALLAS_SUPPORT         1
 //#define DHT_SUPPORT            1

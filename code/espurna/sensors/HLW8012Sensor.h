@@ -33,22 +33,6 @@ class HLW8012Sensor : public BaseEmonSensor {
             delete _hlw8012;
         }
 
-        void expectedCurrent(double expected) {
-            _hlw8012->expectedCurrent(expected);
-        }
-
-        void expectedVoltage(unsigned int expected) {
-            _hlw8012->expectedVoltage(expected);
-        }
-
-        void expectedPower(unsigned int expected) {
-            _hlw8012->expectedActivePower(expected);
-        }
-
-        void resetRatios() {
-            _hlw8012->resetMultipliers();
-        }
-
         // ---------------------------------------------------------------------
 
         void setSEL(unsigned char sel) {
@@ -73,16 +57,60 @@ class HLW8012Sensor : public BaseEmonSensor {
             _sel_current = value;
         }
 
-        void setCurrentRatio(double value) {
+        // ---------------------------------------------------------------------
+
+        void expectedCurrent(double expected) override {
+            _hlw8012->expectedCurrent(expected);
+        }
+
+        void expectedVoltage(unsigned int expected) override {
+            _hlw8012->expectedVoltage(expected);
+        }
+
+        void expectedPower(unsigned int expected) override {
+            _hlw8012->expectedActivePower(expected);
+        }
+
+        double defaultCurrentRatio() const override {
+            return HLW8012_CURRENT_RATIO;
+        }
+
+        double defaultVoltageRatio() const override {
+            return HLW8012_VOLTAGE_RATIO;
+        }
+
+        double defaultPowerRatio() const override {
+            return HLW8012_POWER_RATIO;
+        }
+
+        void resetRatios() override {
+            _hlw8012->setCurrentMultiplier(_initialRatioC);
+            _hlw8012->setVoltageMultiplier(_initialRatioV);
+            _hlw8012->setPowerMultiplier(_initialRatioP);
+        }
+
+        void setCurrentRatio(double value) override {
             _hlw8012->setCurrentMultiplier(value);
         };
 
-        void setVoltageRatio(double value) {
+        void setVoltageRatio(double value) override {
             _hlw8012->setVoltageMultiplier(value);
         };
 
-        void setPowerRatio(double value) {
+        void setPowerRatio(double value) override {
             _hlw8012->setPowerMultiplier(value);
+        };
+
+        double getCurrentRatio() override {
+            return _hlw8012->getCurrentMultiplier();
+        };
+
+        double getVoltageRatio() override {
+            return _hlw8012->getVoltageMultiplier();
+        };
+
+        double getPowerRatio() override {
+            return _hlw8012->getPowerMultiplier();
         };
 
         // ---------------------------------------------------------------------
@@ -102,18 +130,6 @@ class HLW8012Sensor : public BaseEmonSensor {
         unsigned char getSELCurrent() {
             return _sel_current;
         }
-
-        double getCurrentRatio() {
-            return _hlw8012->getCurrentMultiplier();
-        };
-
-        double getVoltageRatio() {
-            return _hlw8012->getVoltageMultiplier();
-        };
-
-        double getPowerRatio() {
-            return _hlw8012->getPowerMultiplier();
-        };
 
         // ---------------------------------------------------------------------
         // Sensors API
@@ -135,19 +151,13 @@ class HLW8012Sensor : public BaseEmonSensor {
                 _hlw8012->begin(_cf, _cf1, _sel, _sel_current, false, 1000000);
             #endif
 
-            // These values are used to calculate current, voltage and power factors as per datasheet formula
-            // These are the nominal values for the Sonoff POW resistors:
-            // * The CURRENT_RESISTOR is the 1milliOhm copper-manganese resistor in series with the main line
-            // * The VOLTAGE_RESISTOR_UPSTREAM are the 5 470kOhm resistors in the voltage divider that feeds the V2P pin in the HLW8012
-            // * The VOLTAGE_RESISTOR_DOWNSTREAM is the 1kOhm resistor in the voltage divider that feeds the V2P pin in the HLW8012
-            _hlw8012->setResistors(HLW8012_CURRENT_R, HLW8012_VOLTAGE_R_UP, HLW8012_VOLTAGE_R_DOWN);
+            // Adjust with ratio values that could be set in the hardware profile
+            _defaultRatios();
 
             // Handle interrupts
-            #if HLW8012_USE_INTERRUPTS
-                #if HLW8012_WAIT_FOR_WIFI == 0
-                    _enableInterrupts(false);
-                    _enableInterrupts(true);
-                #endif
+            #if HLW8012_USE_INTERRUPTS && (!HLW8012_WAIT_FOR_WIFI)
+                _enableInterrupts(false);
+                _enableInterrupts(true);
             #endif
 
             _ready = true;
@@ -162,7 +172,7 @@ class HLW8012Sensor : public BaseEmonSensor {
         }
 
         // Descriptive name of the slot # index
-        String slot(unsigned char index) {
+        String description(unsigned char index) {
             return description();
         };
 
@@ -187,10 +197,7 @@ class HLW8012Sensor : public BaseEmonSensor {
         }
 
         double getEnergyDelta() {
-            const auto result = _hlw8012->getEnergy();
-            _energy[0] += sensor::Ws { result };
-            _hlw8012->resetEnergy();
-            return result;
+            return _energy_last;
         }
 
         // Current value for slot # index
@@ -207,18 +214,21 @@ class HLW8012Sensor : public BaseEmonSensor {
         }
 
         // Pre-read hook (usually to populate registers with up-to-date data)
-        #if HLW8012_USE_INTERRUPTS
-        #if HLW8012_WAIT_FOR_WIFI
         void pre() {
-            _enableInterrupts(wifiConnected());
-        }
-        #endif
-        #endif
+            #if HLW8012_USE_INTERRUPTS && HLW8012_WAIT_FOR_WIFI
+                _enableInterrupts(wifiConnected());
+            #endif
 
-        // Toggle between current and voltage monitoring
-        #if HLW8012_USE_INTERRUPTS == 0
-        // Post-read hook (usually to reset things)
-        void post() { _hlw8012->toggleMode(); }
+            _energy_last = _hlw8012->getEnergy();
+            _energy[0] += sensor::Ws { _energy_last };
+            _hlw8012->resetEnergy();
+        }
+
+        #if !HLW8012_USE_INTERRUPTS
+        // Toggle between current and voltage monitoring after reading
+        void post() {
+            _hlw8012->toggleMode();
+        }
         #endif // HLW8012_USE_INTERRUPTS == 0
 
         // Handle interrupt calls
@@ -228,6 +238,25 @@ class HLW8012Sensor : public BaseEmonSensor {
         }
 
     protected:
+
+        void _defaultRatios() {
+            // These values are used to calculate current, voltage and power factors as per datasheet formula
+            // These are the nominal values for the Sonoff POW resistors:
+            // * The CURRENT_RESISTOR is the 1milliOhm copper-manganese resistor in series with the main line
+            // * The VOLTAGE_RESISTOR_UPSTREAM are the 5 470kOhm resistors in the voltage divider that feeds the V2P pin in the HLW8012
+            // * The VOLTAGE_RESISTOR_DOWNSTREAM is the 1kOhm resistor in the voltage divider that feeds the V2P pin in the HLW8012
+            _hlw8012->setResistors(HLW8012_CURRENT_R, HLW8012_VOLTAGE_R_UP, HLW8012_VOLTAGE_R_DOWN);
+
+            // Multipliers are already set, but we might have changed default values via the hardware profile
+            if (defaultCurrentRatio() > 0.0) _hlw8012->setCurrentMultiplier(defaultCurrentRatio());
+            if (defaultVoltageRatio() > 0.0) _hlw8012->setVoltageMultiplier(defaultVoltageRatio());
+            if (defaultPowerRatio() > 0.0) _hlw8012->setPowerMultiplier(defaultPowerRatio());
+
+            // Preserve ratios as a fallback
+            _initialRatioC = getCurrentRatio();
+            _initialRatioV = getVoltageRatio();
+            _initialRatioP = getPowerRatio();
+        }
 
         // ---------------------------------------------------------------------
         // Interrupt management
@@ -273,10 +302,16 @@ class HLW8012Sensor : public BaseEmonSensor {
 
         // ---------------------------------------------------------------------
 
+        double _initialRatioC;
+        double _initialRatioV;
+        double _initialRatioP;
+
         unsigned char _sel = GPIO_NONE;
         unsigned char _cf = GPIO_NONE;
         unsigned char _cf1 = GPIO_NONE;
         bool _sel_current = true;
+
+        uint32_t _energy_last = 0;
 
         HLW8012 * _hlw8012 = NULL;
 

@@ -26,6 +26,7 @@
 #pragma once
 
 #include "BaseSensor.h"
+#include "../i2c.h"
 
 // TODO: Must inherit from I2CSensor<>, not just I2CSensor. Even with default value :(
 //       Perhaps I2CSensor should be alias for I2CSensorBase?
@@ -46,7 +47,7 @@ class I2CSensor : public T {
         }
 
         // Descriptive name of the slot # index
-        String slot(unsigned char index) {
+        String description(unsigned char index) {
             return static_cast<T*>(this)->description();
         };
 

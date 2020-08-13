@@ -549,7 +549,7 @@
     #ifndef CSE7766_SUPPORT
     #define CSE7766_SUPPORT     1
     #endif
-    #define CSE7766_PIN         1
+    #define CSE7766_RX_PIN      3
 
 #elif defined(ITEAD_SONOFF_DUAL)
 
@@ -975,7 +975,7 @@
 
     // CSE7766
     #define CSE7766_SUPPORT         1
-    #define CSE7766_PIN             1
+    #define CSE7766_RX_PIN          3
 
 #elif defined(ITEAD_SONOFF_S31_LITE)
 
@@ -1255,7 +1255,7 @@
 
     // Info
     #define MANUFACTURER        "LYASI"
-    #define DEVICE              "RGB-LED"
+    #define DEVICE              "RGB_LED"
     #define RELAY_PROVIDER      RELAY_PROVIDER_LIGHT
     #define LIGHT_PROVIDER      LIGHT_PROVIDER_MY92XX
     #define DUMMY_RELAY_COUNT   1
@@ -1486,6 +1486,42 @@
     #define LIGHT_CH2_PIN       14      // GREEN
     #define LIGHT_CH3_PIN       13      // BLUE
     #define LIGHT_CH4_PIN       15      // WHITE
+
+// -----------------------------------------------------------------------------
+// HUGOAI AWP02L-N
+// Pin equivalence extracted from https://templates.blakadder.com/hugoai_awp02l-n.html
+//
+// It follows almost same structure as AOYCOCR X5P with only 1 LED on GPIO02
+//
+// -----------------------------------------------------------------------------
+
+#elif defined(HUGOAI_AWP02L_N)
+    #define MANUFACTURER                "HUGOAI"
+    #define DEVICE                      "AWP02L_N"
+
+    // Buttons
+    #define BUTTON1_PIN                 13
+    #define BUTTON1_CONFIG              BUTTON_PUSHBUTTON | BUTTON_DEFAULT_HIGH
+    #define BUTTON1_RELAY               1
+    // the defaults are reasonable, but you can change them as desired
+    //#define BUTTON1_PRESS               BUTTON_ACTION_NONE
+    //#define BUTTON1_CLICK               BUTTON_ACTION_TOGGLE
+    //#define BUTTON1_DBLCLICK            BUTTON_ACTION_AP
+    //#define BUTTON1_LNGCLICK            BUTTON_ACTION_RESET
+    //#define BUTTON1_LNGLNGCLICK         BUTTON_ACTION_FACTORY
+
+    // Relays
+    #define RELAY1_PIN                  15
+    #define RELAY1_TYPE                 RELAY_TYPE_NORMAL
+
+    // LEDs
+
+    // LED1 (blue) indicates on/off state; you could use LED_MODE_FOLLOW_INVERSE
+    // so that the LED lights the button when 'off' so it can be found easily.
+    #define LED1_PIN                    2
+    #define LED1_PIN_INVERSE            1
+    #define LED1_MODE                   LED_MODE_FOLLOW
+    #define LED1_RELAY                  1
 
 // -----------------------------------------------------------------------------
 // Jan Goedeke Wifi Relay
@@ -3165,7 +3201,7 @@
     #ifndef CSE7766_SUPPORT
     #define CSE7766_SUPPORT     1
     #endif
-    #define CSE7766_PIN         1
+    #define CSE7766_RX_PIN      3
 
 // -----------------------------------------------------------------------------
 // Teckin SP21
@@ -3281,7 +3317,7 @@
 
 // -----------------------------------------------------------------------------
 // The Gosund WP3 is based on ESP8285, so 1 MB internal flash (DOUT required)
-// The module has no-connect:  TX, RX, RST, AD, GPIO5, (and GPIO0, 
+// The module has no-connect:  TX, RX, RST, AD, GPIO5, (and GPIO0,
 //     GPIO2 via test points on the back of the module)
 // and these are wired to devices:
 // GPIO4: /BTN
@@ -3497,6 +3533,50 @@
 
 // -----------------------------------------------------------------------------
 
+#elif defined(GENERIC_AG_L4_V3)
+
+    // Info
+    #define MANUFACTURER                "GENERIC"
+    #define DEVICE                      "AG_L4_V3"
+    #define RELAY_PROVIDER              RELAY_PROVIDER_LIGHT
+    #define LIGHT_PROVIDER              LIGHT_PROVIDER_DIMMER
+    #define DUMMY_RELAY_COUNT           1
+
+    // button 1: "power" button
+    #define BUTTON1_PIN                 13
+    #define BUTTON1_RELAY               1
+    #define BUTTON1_CONFIG              BUTTON_PUSHBUTTON | BUTTON_SET_PULLUP | BUTTON_DEFAULT_HIGH
+    #define BUTTON1_PRESS               BUTTON_ACTION_TOGGLE
+    #define BUTTON1_CLICK               BUTTON_ACTION_NONE
+    #define BUTTON1_DBLCLICK            BUTTON_ACTION_NONE
+    #define BUTTON1_LNGCLICK            BUTTON_ACTION_NONE
+    #define BUTTON1_LNGLNGCLICK         BUTTON_ACTION_RESET
+
+    // button 2: "wifi" button
+    #define BUTTON2_PIN                 2
+    #define BUTTON2_CONFIG              BUTTON_PUSHBUTTON | BUTTON_DEFAULT_HIGH
+    #define BUTTON2_PRESS               BUTTON_ACTION_TOGGLE
+    #define BUTTON2_CLICK               BUTTON_ACTION_NONE
+    #define BUTTON2_DBLCLICK            BUTTON_ACTION_NONE
+    #define BUTTON2_LNGCLICK            BUTTON_ACTION_NONE
+    #define BUTTON2_LNGLNGCLICK         BUTTON_ACTION_NONE
+
+    // LEDs
+    #define LED1_PIN                    5      // red status led
+    #define LED1_PIN_INVERSE            0
+
+    #define LED2_PIN                    16      // master light power
+    #define LED2_PIN_INVERSE            1
+    #define LED2_MODE                   LED_MODE_RELAY
+
+    // Light
+    #define LIGHT_CHANNELS              3
+    #define LIGHT_CH1_PIN               4        // RED
+    #define LIGHT_CH2_PIN               12       // GREEN
+    #define LIGHT_CH3_PIN               14       // BLUE
+
+// -----------------------------------------------------------------------------
+
 #elif defined(ALLTERCO_SHELLY1)
 
     // Info
@@ -3617,6 +3697,45 @@
     #define ADE7953_SUPPORT     1
     #define I2C_SDA_PIN         12
     #define I2C_SCL_PIN         14
+
+// -----------------------------------------------------------------------------
+// This device has teh same behaviour as the GOSUND WP3, but with different GPIO pin values
+// GPIO equivalents extracted from https://templates.blakadder.com/aoycocr_X5P.html
+
+#elif defined(AOYCOCR_X5P)
+
+    // Info
+    #define MANUFACTURER                "AOYCOCR"
+    #define DEVICE                      "X5P"
+
+    // Buttons
+    #define BUTTON1_PIN                 13
+    #define BUTTON1_CONFIG              BUTTON_PUSHBUTTON | BUTTON_DEFAULT_HIGH
+    #define BUTTON1_RELAY               1
+    // the defaults are reasonable, but you can change them as desired
+    //#define BUTTON1_PRESS               BUTTON_ACTION_NONE
+    //#define BUTTON1_CLICK               BUTTON_ACTION_TOGGLE
+    //#define BUTTON1_DBLCLICK            BUTTON_ACTION_AP
+    //#define BUTTON1_LNGCLICK            BUTTON_ACTION_RESET
+    //#define BUTTON1_LNGLNGCLICK         BUTTON_ACTION_FACTORY
+
+    // Relays
+    #define RELAY1_PIN                  15
+    #define RELAY1_TYPE                 RELAY_TYPE_NORMAL
+
+    // LEDs
+
+    // LED1 (red) indicates on/off state; you could use LED_MODE_FOLLOW_INVERSE
+    // so that the LED lights the button when 'off' so it can be found easily.
+    #define LED1_PIN                    0
+    #define LED1_PIN_INVERSE            1
+    #define LED1_MODE                   LED_MODE_FOLLOW
+    #define LED1_RELAY                  1
+
+    // LED2 (blue) indicates wifi activity
+    #define LED2_PIN                    2
+    #define LED2_PIN_INVERSE            1
+    #define LED2_MODE                   LED_MODE_WIFI
 
 // -----------------------------------------------------------------------------
 
@@ -4289,7 +4408,7 @@
 
     // Info
     #define MANUFACTURER                "ETEKCITY"
-    #define DEVICE                      "ESW01-USA"
+    #define DEVICE                      "ESW01_USA"
 
     // Buttons
     #define BUTTON1_PIN                 14
@@ -4512,6 +4631,25 @@
     #define SENSOR_POWER_UNITS          POWER_WATTS
 
 // -----------------------------------------------------------------------------
+// KINGART_CURTAIN_SWITCH
+// -----------------------------------------------------------------------------
+#elif defined(KINGART_CURTAIN_SWITCH)
+
+    // Info
+    #define MANUFACTURER            "KINGART"
+    #define DEVICE                  "CURTAIN_SWITCH"
+
+    #define CURTAIN_SUPPORT         1
+
+    // LEDs
+    #define LED1_PIN                13
+    #define LED1_PIN_INVERSE        1
+
+    // KINGART module handles the UART, can't print any debug messages
+    #define KINGART_CURTAIN_SUPPORT     1
+    #define DEBUG_SERIAL_SUPPORT        0
+
+// -----------------------------------------------------------------------------
 // LSC Smart LED Light Strip (Smart CXonnect Series) available ACTION (Germany)
 // https://www.action.com/de-de/p/lsc-smart-connect-intelligenter-multicolor-led-strip-/
 // Reflashing from original Tuya firmware
@@ -4596,10 +4734,135 @@
     #define RELAY4_TYPE             RELAY_TYPE_NORMAL
 
 // -----------------------------------------------------------------------------
+// NEDIS WIFIP310FWT Wi-Fi Smart Extension Socket
+// 3x Schuko Type F, 4x USB, 16 A
+// https://nedis.com/en-us/product/smart-living/smart-home/energy/550672299/wi-fi-smart-extension-socket-3x-schuko-type-f-4x-usb-16-a
+// -----------------------------------------------------------------------------
+
+#elif defined(NEDIS_WIFIP310FWT)
+
+    // Info
+    #define MANUFACTURER            "NEDIS"
+    #define DEVICE                  "WIFIP310FWT"
+
+    // Based on the reporter, this product uses GPIO1 and 3 for the button
+    // and onboard LED, so hardware serial should be disabled...
+    #define DEBUG_SERIAL_SUPPORT    0
+
+    // Buttons
+    #define BUTTON1_PIN             3
+    #define BUTTON1_CONFIG          BUTTON_PUSHBUTTON | BUTTON_DEFAULT_HIGH
+
+    // Relays
+    #define RELAY1_PIN              5
+    #define RELAY2_PIN              4
+    #define RELAY3_PIN              13
+    #define RELAY4_PIN              14
+
+    // LEDs
+    #define LED1_PIN                1
+    #define LED1_PIN_INVERSE        1
+
+// -----------------------------------------------------------------------------
+// Arlec Smart PC190HA Plug
+// https://templates.blakadder.com/arlec_PC190HA.html
+// -----------------------------------------------------------------------------
+
+#elif defined(ARLEC_PC190HA)
+
+    // Info
+    #define MANUFACTURER        "ARLEC"
+    #define DEVICE              "PC190HA"
+
+    // Buttons
+    #define BUTTON1_PIN         14
+    #define BUTTON1_CONFIG      BUTTON_PUSHBUTTON | BUTTON_DEFAULT_HIGH
+    #define BUTTON1_RELAY       1
+
+    // Relays
+    #define RELAY1_PIN          12
+    #define RELAY1_TYPE         RELAY_TYPE_NORMAL
+
+    // LEDs
+    #define LED1_PIN            4   // blue LED
+    #define LED1_PIN_INVERSE    1
+    #define LED2_PIN            13  // red LED
+    #define LED2_PIN_INVERSE    1
+
+// -----------------------------------------------------------------------------
+// Arlec Smart PB89HA Power Strip
+// https://templates.blakadder.com/arlec_PB89HA.html
+// -----------------------------------------------------------------------------
+
+#elif defined(ARLEC_PB89HA)
+
+    // Info
+    #define MANUFACTURER        "ARLEC"
+    #define DEVICE              "PB89HA"
+
+    // Buttons
+    #define BUTTON1_PIN         3
+    #define BUTTON1_CONFIG      BUTTON_PUSHBUTTON | BUTTON_DEFAULT_HIGH
+
+    // Relays
+    #define RELAY1_PIN          5
+    #define RELAY2_PIN          4
+    #define RELAY3_PIN          13
+    #define RELAY4_PIN          12
+
+    // LEDs
+    #define LED1_PIN            1
+    #define LED1_PIN_INVERSE    1
+
+// -----------------------------------------------------------------------------
+// Prodino WIFI
+// https://kmpelectronics.eu/products/prodino-wifi-v1/
+// -------------------------------------
+
+#elif defined(PRODINO_WIFI)
+
+    // Info
+    #define MANUFACTURER        "PRODINO"
+    #define DEVICE              "WIFI"
+
+    // MCP23S08
+    #define MCP23S08_SUPPORT        1
+
+    // Relays
+    #define RELAY_PROVIDER          RELAY_PROVIDER_MCP23S08
+    #define RELAY1_PIN              4
+    #define RELAY2_PIN              5
+    #define RELAY3_PIN              6
+    #define RELAY4_PIN              7
+
+    // Buttons
+    #define BUTTON1_CONFIG          BUTTON_PUSHBUTTON | BUTTON_DEFAULT_HIGH
+    #define BUTTON1_PIN             0
+
+    #define BUTTON2_CONFIG          BUTTON_PUSHBUTTON | BUTTON_DEFAULT_HIGH
+    #define BUTTON2_PIN             1
+
+    #define BUTTON3_CONFIG          BUTTON_PUSHBUTTON | BUTTON_DEFAULT_HIGH
+    #define BUTTON3_PIN             2
+
+    #define BUTTON4_CONFIG          BUTTON_PUSHBUTTON | BUTTON_DEFAULT_HIGH
+    #define BUTTON4_PIN             3
+
+    #define BUTTON1_RELAY           1
+    #define BUTTON2_RELAY           2
+    #define BUTTON3_RELAY           3
+    #define BUTTON4_RELAY           4
+
+    #define BUTTON_EVENTS_SOURCE    BUTTON_EVENTS_SOURCE_MCP23S08
+
+    // LEDs
+    #define LED1_PIN                2
+    #define LED1_PIN_INVERSE        1
+
+// -----------------------------------------------------------------------------
 
 #else
 
     #error "UNSUPPORTED HARDWARE!!"
 
 #endif
-

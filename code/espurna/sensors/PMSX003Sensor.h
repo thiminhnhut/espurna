@@ -217,7 +217,7 @@ class PMSX003Sensor : public BaseSensor, PMSX003 {
 
             if (_soft) {
                 if (_serial) removeSerial();
-                _serial = new SoftwareSerial(_pin_rx, _pin_tx, false, 64);
+                _serial = new SoftwareSerial(_pin_rx, _pin_tx, false);
                 static_cast<SoftwareSerial*>(_serial)->enableIntTx(false);
             }
 
@@ -247,7 +247,7 @@ class PMSX003Sensor : public BaseSensor, PMSX003 {
         }
 
         // Descriptive name of the slot # index
-        String slot(unsigned char index) {
+        String description(unsigned char index) {
             char buffer[36] = {0};
             if (_soft) {
                 snprintf(buffer, sizeof(buffer), "%d @ %s @ SwSerial(%u,%u)", int(index + 1), pms_specs[_type].name, _pin_rx, _pin_tx);

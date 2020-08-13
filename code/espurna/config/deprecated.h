@@ -48,7 +48,7 @@
 #warning "Current implementation of AsyncMqttClient with axTLS is no longer supported. Consider switching to the SECURE_CLIENT configuration with MQTT_LIBRARY_ARDUINOMQTT or MQTT_LIBRARY_PUBSUBCLIENT. See: https://github.com/xoseperez/espurna/issues/1465"
 #endif
 
-// 1.14.2 changes preprocessor var name
+// 1.15.0 changes preprocessor var name
 #ifdef BUTTON_DBLCLICK_DELAY
 #warning "BUTTON_DBLCLICK_DELAY is deprecated! Please use BUTTON_REPEAT_DELAY instead"
 #define BUTTON_REPEAT_DELAY BUTTON_DBLCLICK_DELAY
@@ -97,4 +97,14 @@
 #ifdef BUTTON8_MODE
 #warning "BUTTON[1-8]_MODE is deprecated! Please use BUTTON[1-8]_CONFIG instead"
 #define BUTTON8_CONFIG BUTTON8_MODE
+#endif
+
+#ifdef CSE7766_PIN
+#warning "CSE7766_PIN is deprecated! Please use CSE7766_RX_PIN instead"
+#define CSE7766_RX_PIN CSE7766_PIN
+#endif
+
+#ifdef WIFI_FALLBACK_APMODE
+#warning "WIFI_FALLBACK_APMODE is deprecated! Please use WIFI_AP_MODE instead"
+#define WIFI_AP_MODE ((1 == WIFI_FALLBACK_APMODE) ? WiFiApMode::Fallback : WiFiApMode::Disabled)
 #endif

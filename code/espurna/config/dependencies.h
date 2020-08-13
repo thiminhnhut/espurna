@@ -121,6 +121,20 @@
 #define RELAY_SUPPORT               1           // Most of the time we require it
 #endif
 
+#if TERMINAL_WEB_API_SUPPORT
+#undef TERMINAL_SUPPORT
+#define TERMINAL_SUPPORT            1           // Need terminal command line parser and commands
+#undef WEB_SUPPORT
+#define WEB_SUPPORT                 1           // Registered as web server request handler
+#endif
+
+#if TERMINAL_MQTT_SUPPORT
+#undef TERMINAL_SUPPORT
+#define TERMINAL_SUPPORT            1           // Need terminal command line parser and commands
+#undef MQTT_SUPPORT
+#define MQTT_SUPPORT                1           // Subscribe and publish things
+#endif
+
 //------------------------------------------------------------------------------
 // Hint about ESPAsyncTCP options and our internal one
 // TODO: clean-up SSL_ENABLED and USE_SSL settings for 1.15.0
@@ -206,4 +220,13 @@
 #if not defined(MQTT_MAX_PACKET_SIZE)
 #warning "MQTT_MAX_PACKET_SIZE should be set in `build_flags = ...` of the environment! Default value is used instead."
 #endif
+#endif
+
+//------------------------------------------------------------------------------
+// Disable BME680 support if using Core version 2.3.0 due to memory constraints.
+
+#if BME680_SUPPORT && defined(ARDUINO_ESP8266_RELEASE_2_3_0)
+#warning "BME680_SUPPORT is not available when using Arduino Core 2.3.0 due to memory constraints. Please use Arduino Core 2.6.3+ instead (or set `platform = ${common.platform_latest}` for the latest version)."
+#undef BME680_SUPPORT
+#define BME680_SUPPORT 0
 #endif

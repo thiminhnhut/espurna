@@ -15,9 +15,6 @@
 #define WIFI_STATE_WPS              4
 #define WIFI_STATE_SMARTCONFIG      8
 
-#define WIFI_AP_ALLWAYS             1
-#define WIFI_AP_FALLBACK            2
-
 //------------------------------------------------------------------------------
 // BUTTONS
 //------------------------------------------------------------------------------
@@ -64,6 +61,7 @@
 #define BUTTON_EVENTS_SOURCE_GENERIC               0
 #define BUTTON_EVENTS_SOURCE_ITEAD_SONOFF_DUAL     1
 #define BUTTON_EVENTS_SOURCE_FOXEL_LIGHTFOX_DUAL   2
+#define BUTTON_EVENTS_SOURCE_MCP23S08              3
 
 //------------------------------------------------------------------------------
 // ENCODER
@@ -103,6 +101,7 @@
 #define RELAY_PROVIDER_LIGHT        2
 #define RELAY_PROVIDER_RFBRIDGE     3
 #define RELAY_PROVIDER_STM          4
+#define RELAY_PROVIDER_MCP23S08     5
 
 #define RELAY_GROUP_SYNC_NORMAL      0
 #define RELAY_GROUP_SYNC_INVERSE     1
@@ -205,6 +204,7 @@
 
 #define SCHEDULER_TYPE_SWITCH       1
 #define SCHEDULER_TYPE_DIM          2
+#define SCHEDULER_TYPE_CURTAIN      3
 
 // -----------------------------------------------------------------------------
 // IR
@@ -332,6 +332,8 @@
 #define SENSOR_T6613_ID             38
 #define SENSOR_SI1145_ID            39
 #define SENSOR_HDC1080_ID           40
+#define SENSOR_PZEM004TV30_ID       41
+#define SENSOR_BME680_ID            42
 
 //--------------------------------------------------------------------------------
 // Magnitudes
@@ -370,8 +372,13 @@
 #define MAGNITUDE_CO                29
 #define MAGNITUDE_RESISTANCE        30
 #define MAGNITUDE_PH                31
+#define MAGNITUDE_FREQUENCY         32
+#define MAGNITUDE_IAQ               33
+#define MAGNITUDE_IAQ_ACCURACY      34
+#define MAGNITUDE_IAQ_STATIC        35
+#define MAGNITUDE_VOC               36
 
-#define MAGNITUDE_MAX               32
+#define MAGNITUDE_MAX               38
 
 #define SENSOR_ERROR_OK             0       // No error
 #define SENSOR_ERROR_OUT_OF_RANGE   1       // Result out of sensor range
@@ -383,6 +390,9 @@
 #define SENSOR_ERROR_GPIO_USED      7       // The GPIO is already in use
 #define SENSOR_ERROR_CALIBRATION    8       // Calibration error or Not calibrated
 #define SENSOR_ERROR_OTHER          99      // Any other error
+
+#define SENSOR_ERROR_MAX            9
+
 //------------------------------------------------------------------------------
 // Telnet server
 //------------------------------------------------------------------------------

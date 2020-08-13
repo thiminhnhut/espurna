@@ -45,16 +45,8 @@
 #define SENSOR_POWER_CHECK_STATUS           1               // If set to 1 the reported power/current/energy will be 0 if the relay[0] is OFF
 #endif
 
-#ifndef SENSOR_TEMPERATURE_CORRECTION
-#define SENSOR_TEMPERATURE_CORRECTION       0.0             // Offset correction
-#endif
-
 #ifndef TEMPERATURE_MIN_CHANGE
 #define TEMPERATURE_MIN_CHANGE              0.0             // Minimum temperature change to report
-#endif
-
-#ifndef SENSOR_HUMIDITY_CORRECTION
-#define SENSOR_HUMIDITY_CORRECTION          0.0             // Offset correction
 #endif
 
 #ifndef HUMIDITY_MIN_CHANGE
@@ -89,6 +81,25 @@
 #define SENSOR_POWER_UNITS                  POWER_WATTS     // Power units (POWER_WATTS | POWER_KILOWATTS)
 #endif
 
+// -----------------------------------------------------------------------------
+// Magnitude offset correction
+// -----------------------------------------------------------------------------
+
+#ifndef SENSOR_TEMPERATURE_CORRECTION
+#define SENSOR_TEMPERATURE_CORRECTION       0.0
+#endif
+
+#ifndef SENSOR_HUMIDITY_CORRECTION
+#define SENSOR_HUMIDITY_CORRECTION          0.0
+#endif
+
+#ifndef SENSOR_PRESSURE_CORRECTION
+#define SENSOR_PRESSURE_CORRECTION          0.0
+#endif
+
+#ifndef SENSOR_LUX_CORRECTION
+#define SENSOR_LUX_CORRECTION               0.0
+#endif
 
 // =============================================================================
 // Specific data for each sensor
@@ -273,8 +284,9 @@
 #define CSE7766_SUPPORT                 0
 #endif
 
-#ifndef CSE7766_PIN
-#define CSE7766_PIN                     1       // TX pin from the CSE7766
+#ifndef CSE7766_RX_PIN
+#define CSE7766_RX_PIN                  3      // RX pin connected to the CSE7766
+                                               // As we never transmit anything, this is the only pin used
 #endif
 
 #ifndef CSE7766_PIN_INVERSE
@@ -770,43 +782,39 @@
 // LDR sensor
 // Enable support by passing LDR_SUPPORT=1 build flag
 //------------------------------------------------------------------------------
- 
-#ifndef SENSOR_LUX_CORRECTION
-#define SENSOR_LUX_CORRECTION           0.0     // Offset correction
-#endif
 
 #ifndef LDR_SUPPORT
 #define LDR_SUPPORT                     0
 #endif
- 
+
 #ifndef LDR_SAMPLES
 #define LDR_SAMPLES                     10      // Number of samples
 #endif
- 
+
 #ifndef LDR_DELAY
 #define LDR_DELAY                       0       // Delay between samples in micros
 #endif
- 
+
 #ifndef LDR_TYPE
 #define LDR_TYPE                        LDR_GL5528
 #endif
- 
+
 #ifndef LDR_ON_GROUND
 #define LDR_ON_GROUND                   true
 #endif
- 
+
 #ifndef LDR_RESISTOR
 #define LDR_RESISTOR                    10000   // Resistance
 #endif
- 
+
 #ifndef LDR_MULTIPLICATION
 #define LDR_MULTIPLICATION              32017200
 #endif
- 
+
 #ifndef LDR_POWER
 #define LDR_POWER                       1.5832
 #endif
- 
+
 //------------------------------------------------------------------------------
 // MHZ19 CO2 sensor
 // Enable support by passing MHZ19_SUPPORT=1 build flag
@@ -970,19 +978,20 @@
 #endif
 
 #ifndef PZEM004T_USE_SOFT
-#define PZEM004T_USE_SOFT               0       // Software serial is not working atm, use hardware serial
+#define PZEM004T_USE_SOFT               0       // By default, use Hardware serial with GPIO15 (TX) and GPIO13 (RX)
 #endif
 
 #ifndef PZEM004T_RX_PIN
-#define PZEM004T_RX_PIN                 13      // Software serial RX GPIO (if PZEM004T_USE_SOFT == 1)
+#define PZEM004T_RX_PIN                 13      // Serial RX GPIO (if PZEM004T_USE_SOFT == 1, creates a SoftwareSerial object)
 #endif
 
 #ifndef PZEM004T_TX_PIN
-#define PZEM004T_TX_PIN                 15      // Software serial TX GPIO (if PZEM004T_USE_SOFT == 1)
+#define PZEM004T_TX_PIN                 15      // Serial TX GPIO (if PZEM004T_USE_SOFT == 1, creates a SoftwareSerial object)
 #endif
 
 #ifndef PZEM004T_HW_PORT
 #define PZEM004T_HW_PORT                Serial  // Hardware serial port (if PZEM004T_USE_SOFT == 0)
+                                                // ESP8266: Serial1 does not allow receiving data, no point in changing this setting
 #endif
 
 #ifndef PZEM004T_ADDRESSES
@@ -995,6 +1004,36 @@
 
 #ifndef PZEM004T_MAX_DEVICES
 #define PZEM004T_MAX_DEVICES            3
+#endif
+
+//------------------------------------------------------------------------------
+// PZEM004T **V3.0** based power monitor
+// Enable support by passing PZEM004TV30_SUPPORT=1 build flag
+//------------------------------------------------------------------------------
+
+#ifndef PZEM004TV30_SUPPORT
+#define PZEM004TV30_SUPPORT                0
+#endif
+
+#ifndef PZEM004TV30_ADDRESS
+#define PZEM004TV30_ADDRESS                0xF8    // Default: factory value
+#endif
+
+#ifndef PZEM004TV30_USE_SOFT
+#define PZEM004TV30_USE_SOFT               0       // By default, use Hardware serial with GPIO15 (TX) and GPIO13 (RX)
+                                                   // (but, make sure that DEBUG_SERIAL_SUPPORT is set to 0)
+#endif
+
+#ifndef PZEM004TV30_RX_PIN
+#define PZEM004TV30_RX_PIN                 13      // Serial RX GPIO (if PZEM004T_USE_SOFT == 1, creates a SoftwareSerial object)
+#endif
+
+#ifndef PZEM004TV30_TX_PIN
+#define PZEM004TV30_TX_PIN                 15      // Serial TX GPIO (if PZEM004T_USE_SOFT == 1, creates a SoftwareSerial object)
+#endif
+
+#ifndef PZEM004TV30_DEBUG
+#define PZEM004TV30_DEBUG                  0
 #endif
 
 //------------------------------------------------------------------------------
@@ -1264,6 +1303,29 @@
 #define SI1145_ADDRESS                   0x60
 #endif
 
+//------------------------------------------------------------------------------
+// BME680
+// Enable support by passing BME680_SUPPORT=1 build flag
+//------------------------------------------------------------------------------
+
+#ifndef BME680_SUPPORT
+#define BME680_SUPPORT                              0
+#endif
+
+#ifndef BME680_I2C_ADDRESS
+#define BME680_I2C_ADDRESS                          0x00                                   // 0x00 means auto
+#endif
+
+#ifndef BME680_BSEC_CONFIG
+#define BME680_BSEC_CONFIG                          BME680_BSEC_CONFIG_GENERIC_33V_3S_4D   // BSEC config config value. By default, 3.3V as supply voltage,
+#endif                                                                                     // 3 seconds as maximum time between bsec_sensor_control` calls
+                                                                                           // and 4 days as the time considered for background calibration.
+
+#ifndef BME680_STATE_SAVE_INTERVAL
+#define BME680_STATE_SAVE_INTERVAL                  0                                      // How frequently (in milliseconds) should state be stored in
+#endif                                                                                     // non-volatile memory. A common value would be every 6h or
+                                                                                           // 360 * 60 * 1000 milliseconds. By default, this is disabled.
+
 // -----------------------------------------------------------------------------
 // ADC
 // -----------------------------------------------------------------------------
@@ -1317,6 +1379,7 @@
     BH1750_SUPPORT || \
     BMP180_SUPPORT || \
     BMX280_SUPPORT || \
+    BME680_SUPPORT || \
     EMON_ADC121_SUPPORT || \
     EMON_ADS1X15_SUPPORT || \
     SHT3X_I2C_SUPPORT || \
@@ -1352,6 +1415,7 @@
     ANALOG_SUPPORT || \
     BH1750_SUPPORT || \
     BMP180_SUPPORT || \
+    BME680_SUPPORT || \
     BMX280_SUPPORT || \
     CSE7766_SUPPORT || \
     DALLAS_SUPPORT || \
@@ -1387,7 +1451,8 @@
     V9261F_SUPPORT || \
     VEML6075_SUPPORT || \
     VL53L1X_SUPPORT || \
-    HDC1080_SUPPORT \
+    HDC1080_SUPPORT || \
+    PZEM004TV30_SUPPORT \
 )
 #endif
 

@@ -89,21 +89,23 @@ class PZEM004TSensor : public BaseEmonSensor {
             return PZEM004TSensor::instance;
         }
 
+        // ---------------------------------------------------------------------
+
         // We can't modify PZEM values, just ignore this
-        void resetEnergy() {}
-        void resetEnergy(unsigned char) {}
-        void resetEnergy(unsigned char, sensor::Energy) {}
+        void resetEnergy() override {}
+        void resetEnergy(unsigned char) override {}
+        void resetEnergy(unsigned char, sensor::Energy) override {}
 
         // Override Base methods that deal with _energy[]
-        size_t countDevices() {
+        size_t countDevices() override {
             return _addresses.size();
         }
 
-        double getEnergy(unsigned char index) {
+        double getEnergy(unsigned char index) override {
             return _readings[index].energy;
         }
 
-        sensor::Energy totalEnergy(unsigned char index) {
+        sensor::Energy totalEnergy(unsigned char index) override {
             return getEnergy(index);
         }
 
@@ -189,6 +191,10 @@ class PZEM004TSensor : public BaseEmonSensor {
             if (_pzem) delete _pzem;
             if (_serial) {
                 _pzem = new PZEM004T(_serial);
+                if ((_pin_tx == 15) && (_pin_rx == 13)) {
+                    _serial->flush();
+                    _serial->swap();
+                }
             } else {
                 _pzem = new PZEM004T(_pin_rx, _pin_tx);
             }
@@ -210,8 +216,8 @@ class PZEM004TSensor : public BaseEmonSensor {
         }
 
         // Descriptive name of the slot # index
-        String slot(unsigned char index) {
-            int dev = index / PZ_MAGNITUDE_COUNT;
+        String description(unsigned char index) {
+            auto dev = local(index);
             char buffer[25];
             snprintf(buffer, sizeof(buffer), "(%u/%s)", dev, getAddress(dev).c_str());
             return description() + String(buffer);
@@ -219,14 +225,17 @@ class PZEM004TSensor : public BaseEmonSensor {
 
         // Address of the sensor (it could be the GPIO or I2C address)
         String address(unsigned char index) {
-            int dev = index / PZ_MAGNITUDE_COUNT;
-            return _addresses[dev].toString();
+            return _addresses[local(index)].toString();
+        }
+
+        // Convert slot # to a magnitude #
+        unsigned char local(unsigned char index) override {
+            return index / PZ_MAGNITUDE_COUNT;
         }
 
         // Type for slot # index
         unsigned char type(unsigned char index) {
-            int dev = index / PZ_MAGNITUDE_COUNT;
-            index = index - (dev * PZ_MAGNITUDE_COUNT);
+            index = index - (local(index) * PZ_MAGNITUDE_COUNT);
             if (index == PZ_MAGNITUDE_CURRENT_INDEX)      return MAGNITUDE_CURRENT;
             if (index == PZ_MAGNITUDE_VOLTAGE_INDEX)      return MAGNITUDE_VOLTAGE;
             if (index == PZ_MAGNITUDE_POWER_ACTIVE_INDEX) return MAGNITUDE_POWER_ACTIVE;
@@ -363,19 +372,19 @@ PZEM004TSensor* PZEM004TSensor::instance = nullptr;
 
 void pzem004tInitCommands() {
 
-    terminalRegisterCommand(F("PZ.ADDRESS"), [](Embedis* e) {
+    terminalRegisterCommand(F("PZ.ADDRESS"), [](const terminal::CommandContext& ctx) {
         if (!PZEM004TSensor::instance) return;
 
-        if (e->argc == 1) {
+        if (ctx.argc == 1) {
             DEBUG_MSG_P(PSTR("[SENSOR] PZEM004T\n"));
             unsigned char dev_count = PZEM004TSensor::instance->countDevices();
             for(unsigned char dev = 0; dev < dev_count; dev++) {
                 DEBUG_MSG_P(PSTR("Device %d/%s\n"), dev, PZEM004TSensor::instance->getAddress(dev).c_str());
             }
             terminalOK();
-        } else if(e->argc == 2) {
+        } else if(ctx.argc == 2) {
             IPAddress addr;
-            if (addr.fromString(String(e->argv[1]))) {
+            if (addr.fromString(ctx.argv[1])) {
                 if(PZEM004TSensor::instance->setDeviceAddress(&addr)) {
                     terminalOK();
                 }
@@ -387,12 +396,12 @@ void pzem004tInitCommands() {
         }
     });
 
-    terminalRegisterCommand(F("PZ.RESET"), [](Embedis* e) {
-        if(e->argc > 2) {
+    terminalRegisterCommand(F("PZ.RESET"), [](const terminal::CommandContext& ctx) {
+        if(ctx.argc > 2) {
             terminalError(F("Wrong arguments"));
         } else {
-            unsigned char init = e->argc == 2 ? String(e->argv[1]).toInt() : 0;
-            unsigned char limit = e->argc == 2 ? init +1 : PZEM004TSensor::instance->countDevices();
+            unsigned char init = ctx.argc == 2 ? ctx.argv[1].toInt() : 0;
+            unsigned char limit = ctx.argc == 2 ? init +1 : PZEM004TSensor::instance->countDevices();
             DEBUG_MSG_P(PSTR("[SENSOR] PZEM004T\n"));
             for(unsigned char dev = init; dev < limit; dev++) {
                 PZEM004TSensor::instance->resetEnergy(dev);
@@ -401,12 +410,12 @@ void pzem004tInitCommands() {
         }
     });
 
-    terminalRegisterCommand(F("PZ.VALUE"), [](Embedis* e) {
-        if(e->argc > 2) {
+    terminalRegisterCommand(F("PZ.VALUE"), [](const terminal::CommandContext& ctx) {
+        if(ctx.argc > 2) {
             terminalError(F("Wrong arguments"));
         } else {
-            unsigned char init = e->argc == 2 ? String(e->argv[1]).toInt() : 0;
-            unsigned char limit = e->argc == 2 ? init +1 : PZEM004TSensor::instance->countDevices();
+            unsigned char init = ctx.argc == 2 ? ctx.argv[1].toInt() : 0;
+            unsigned char limit = ctx.argc == 2 ? init +1 : PZEM004TSensor::instance->countDevices();
             DEBUG_MSG_P(PSTR("[SENSOR] PZEM004T\n"));
             for(unsigned char dev = init; dev < limit; dev++) {
                 DEBUG_MSG_P(PSTR("Device %d/%s - Current: %s Voltage: %s Power: %s Energy: %s\n"), //

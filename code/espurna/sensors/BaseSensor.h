@@ -22,7 +22,7 @@ class BaseSensor {
         BaseSensor() {}
 
         // Destructor
-        ~BaseSensor() {}
+        virtual ~BaseSensor() {}
 
         // Initialization method, must be idempotent
         virtual void begin() {}
@@ -39,11 +39,11 @@ class BaseSensor {
         // Descriptive name of the sensor
         virtual String description() = 0;
 
+        // Descriptive name of the slot # index
+        virtual String description(unsigned char index) = 0;
+
         // Address of the sensor (it could be the GPIO or I2C address)
         virtual String address(unsigned char index) = 0;
-
-        // Descriptive name of the slot # index
-        virtual String slot(unsigned char index) = 0;
 
         // Type of sensor
         virtual unsigned char type() { return sensor::type::Base; }
@@ -84,12 +84,15 @@ class BaseSensor {
         // Number of available slots
         unsigned char count() { return _count; }
 
+        // Convert slot # index to a magnitude # index
+        virtual unsigned char local(unsigned char slot) { return 0; }
+
         // Hook for event callback
         void onEvent(TSensorCallback fn) { _callback = fn; };
 
         // Specify units attached to magnitudes
-        virtual sensor::Unit units(unsigned char type) {
-            switch (type) {
+        virtual sensor::Unit units(unsigned char index) {
+            switch (type(index)) {
                 case MAGNITUDE_TEMPERATURE:
                     return sensor::Unit::Celcius;
                 case MAGNITUDE_HUMIDITY:
@@ -114,9 +117,10 @@ class BaseSensor {
                 case MAGNITUDE_PM1dot0:
                 case MAGNITUDE_PM2dot5:
                     return sensor::Unit::MicrogrammPerCubicMeter;
+                case MAGNITUDE_CO:
                 case MAGNITUDE_CO2:
                 case MAGNITUDE_NO2:
-                case MAGNITUDE_CO:
+                case MAGNITUDE_VOC:
                     return sensor::Unit::PartsPerMillion;
                 case MAGNITUDE_LUX:
                     return sensor::Unit::Lux;
@@ -130,6 +134,10 @@ class BaseSensor {
                     return sensor::Unit::MicrosievertPerHour;
                 case MAGNITUDE_DISTANCE:
                     return sensor::Unit::Meter;
+                case MAGNITUDE_FREQUENCY:
+                    return sensor::Unit::Hertz;
+                case MAGNITUDE_PH:
+                    return sensor::Unit::Ph;
                 default:
                     return sensor::Unit::None;
             }
