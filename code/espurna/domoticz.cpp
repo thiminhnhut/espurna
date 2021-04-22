@@ -10,7 +10,6 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 
 #if DOMOTICZ_SUPPORT
 
-#include "broker.h"
 #include "light.h"
 #include "mqtt.h"
 #include "relay.h"
@@ -64,58 +63,57 @@ void _domoticzStatus(unsigned char id, bool status) {
 
 void _domoticzLight(unsigned int idx, const JsonObject& root) {
 
-    if (!lightHasColor()) return;
-
     JsonObject& color = root["Color"];
-    if (!color.success()) return;
+    if (color.success()) {
 
-    // for ColorMode... see:
-    // https://github.com/domoticz/domoticz/blob/development/hardware/ColorSwitch.h
-    // https://www.domoticz.com/wiki/Domoticz_API/JSON_URL's#Set_a_light_to_a_certain_color_or_color_temperature
+        // for ColorMode... see:
+        // https://github.com/domoticz/domoticz/blob/development/hardware/ColorSwitch.h
+        // https://www.domoticz.com/wiki/Domoticz_API/JSON_URL's#Set_a_light_to_a_certain_color_or_color_temperature
 
-    DEBUG_MSG_P(PSTR("[DOMOTICZ] Received rgb:%u,%u,%u ww:%u,cw:%u t:%u brightness:%u for IDX %u\n"),
-        color["r"].as<unsigned char>(),
-        color["g"].as<unsigned char>(),
-        color["b"].as<unsigned char>(),
-        color["ww"].as<unsigned char>(),
-        color["cw"].as<unsigned char>(),
-        color["t"].as<unsigned char>(),
-        color["Level"].as<unsigned char>(),
-        idx
-    );
+        DEBUG_MSG_P(PSTR("[DOMOTICZ] Received rgb:%u,%u,%u ww:%u,cw:%u t:%u brightness:%u for IDX %u\n"),
+            color["r"].as<unsigned char>(),
+            color["g"].as<unsigned char>(),
+            color["b"].as<unsigned char>(),
+            color["ww"].as<unsigned char>(),
+            color["cw"].as<unsigned char>(),
+            color["t"].as<unsigned char>(),
+            color["Level"].as<unsigned char>(),
+            idx
+        );
 
-    // m field contains information about color mode (enum ColorMode from domoticz ColorSwitch.h):
-    unsigned int cmode = color["m"];
+        // m field contains information about color mode (enum ColorMode from domoticz ColorSwitch.h):
+        unsigned int cmode = color["m"];
 
-    if (cmode == 2) { // ColorModeWhite - WW,CW,temperature (t unused for now)
+        if (cmode == 2) { // ColorModeWhite - WW,CW,temperature (t unused for now)
 
-        if (lightChannels() < 2) return;
+            if (lightChannels() < 2) return;
 
-        lightChannel(0, color["ww"]);
-        lightChannel(1, color["cw"]);
+            lightChannel(0, color["ww"]);
+            lightChannel(1, color["cw"]);
 
-    } else if (cmode == 3 || cmode == 4) { // ColorModeRGB or ColorModeCustom
+        } else if (cmode == 3 || cmode == 4) { // ColorModeRGB or ColorModeCustom
 
-        if (lightChannels() < 3) return;
+            if (lightChannels() < 3) return;
 
-        lightChannel(0, color["r"]);
-        lightChannel(1, color["g"]);
-        lightChannel(2, color["b"]);
+            lightChannel(0, color["r"]);
+            lightChannel(1, color["g"]);
+            lightChannel(2, color["b"]);
 
-        // WARM WHITE (or MONOCHROME WHITE) and COLD WHITE are always sent.
-        // Apply only when supported.
-        if (lightChannels() > 3) {
-            lightChannel(3, color["ww"]);
+            // WARM WHITE (or MONOCHROME WHITE) and COLD WHITE are always sent.
+            // Apply only when supported.
+            if (lightChannels() > 3) {
+                lightChannel(3, color["ww"]);
+            }
+            if (lightChannels() > 4) {
+                lightChannel(4, color["cw"]);
+            }
+
         }
-        if (lightChannels() > 4) {
-            lightChannel(4, color["cw"]);
-        }
-
     }
 
-    // domoticz uses 100 as maximum value while we're using Light::BRIGHTNESS_MAX (unsigned char)
-    lightBrightness((root["Level"].as<unsigned char>() / 100.0) * Light::BRIGHTNESS_MAX);
-    lightUpdate(true, mqttForward());
+    // domoticz uses 100 as maximum value while we're using a custom scale
+    lightBrightness((root["Level"].as<long>() / 100l) * Light::BrightnessMax);
+    lightUpdate();
 
 }
 
@@ -154,10 +152,11 @@ void _domoticzMqtt(unsigned int type, const char * topic, char * payload) {
 
             // IDX
             unsigned int idx = root["idx"];
-            String stype = root["stype"];
 
             #if LIGHT_PROVIDER != LIGHT_PROVIDER_NONE
-                if (stype.startsWith("RGB") && (_domoticzIdx(0) == idx)) {
+                String stype = root["stype"];
+                String switchType = root["switchType"];
+                if ((_domoticzIdx(0) == idx) && (stype.startsWith("RGB") || (switchType.equals("Dimmer")))) {
                     _domoticzLight(idx, root);
                 }
             #endif
@@ -173,43 +172,26 @@ void _domoticzMqtt(unsigned int type, const char * topic, char * payload) {
 
     }
 
-};
-
-void _domoticzRelayConfigure(size_t size) {
-    for (size_t n = 0; n < size; ++n) {
-        _dcz_relay_state[n] = relayStatus(n);
-    }
 }
 
 void _domoticzConfigure() {
     const bool enabled = getSetting("dczEnabled", 1 == DOMOTICZ_ENABLED);
     if (enabled != _dcz_enabled) _domoticzMqttSubscribe(enabled);
 
-    #if RELAY_SUPPORT
-        _domoticzRelayConfigure(relayCount());
-    #endif
+#if RELAY_SUPPORT
+    for (size_t id = 0; id < relayCount(); ++id) {
+        _dcz_relay_state[id] = relayStatus(id);
+    }
+#endif
 
     _dcz_enabled = enabled;
 }
 
-void _domoticzConfigCallback(const String& key, const String& value) {
-    if (key.equals("relayDummy")) {
-        _domoticzRelayConfigure(value.toInt());
-        return;
+void _domoticzRelayCallback(size_t id, bool status) {
+    if (_domoticzStatus(id) != status) {
+        _dcz_relay_state[id] = status;
+        domoticzSendRelay(id, status);
     }
-}
-
-void _domoticzBrokerCallback(const String& topic, unsigned char id, unsigned int value) {
-
-    // Only process status messages for switches
-    if (!topic.equals(MQTT_TOPIC_RELAY)) {
-        return;
-    }
-
-    if (_domoticzStatus(id) == value) return;
-    _dcz_relay_state[id] = value;
-    domoticzSendRelay(id, value);
-
 }
 
 #if SENSOR_SUPPORT
@@ -246,6 +228,11 @@ void domoticzSendMagnitude(unsigned char type, unsigned char index, double value
         );
         char svalue[2] = {status, '\0'};
         domoticzSend(key, static_cast<int>(value), svalue);
+    // https://www.domoticz.com/wiki/Domoticz_API/JSON_URL's#Air_quality
+    // nvalue contains the ppm
+    // svalue is not used (?)
+    } else if (MAGNITUDE_CO2 == type) {
+        domoticzSend(key, static_cast<int>(value), "");
     // Otherwise, send char string (nvalue is only for integers)
     } else {
         domoticzSend(key, 0, buffer);
@@ -325,8 +312,9 @@ void domoticzSetup() {
             .onKeyCheck(_domoticzWebSocketOnKeyCheck);
     #endif
 
-    StatusBroker::Register(_domoticzBrokerCallback);
-    ConfigBroker::Register(_domoticzConfigCallback);
+    #if RELAY_SUPPORT
+        relaySetStatusChange(_domoticzRelayCallback);
+    #endif
 
     // Callbacks
     mqttRegister(_domoticzMqtt);

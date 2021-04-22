@@ -23,6 +23,8 @@ Updated to use WiFiServer and support reverse connections by Niek van der Maas <
 #include <vector>
 
 #include "board.h"
+#include "crash.h"
+#include "terminal.h"
 #include "ws.h"
 
 #if TELNET_SERVER == TELNET_SERVER_ASYNC
@@ -31,7 +33,13 @@ Updated to use WiFiServer and support reverse connections by Niek van der Maas <
 
 struct AsyncBufferedClient {
     public:
-        constexpr static const size_t BUFFERS_MAX = 5;
+        constexpr static size_t BuffersMax =
+#if (TCP_MSS == 1460)
+            2ul;
+#else
+            5ul;
+#endif
+
         using buffer_t = std::vector<uint8_t>;
 
         explicit AsyncBufferedClient(AsyncClient* client);
@@ -163,8 +171,8 @@ static std::vector<char> _telnet_data_buffer;
 void _telnetDisconnect(unsigned char clientId) {
     _telnetClients[clientId]->stop();
     _telnetClients[clientId] = nullptr;
-    wifiReconnectCheck();
     DEBUG_MSG_P(PSTR("[TELNET] Client #%d disconnected\n"), clientId);
+    wifiApCheck();
 }
 
 #elif TELNET_SERVER == TELNET_SERVER_ASYNC
@@ -174,8 +182,8 @@ void _telnetCleanUp() {
         for (unsigned char clientId=0; clientId < TELNET_MAX_CLIENTS; ++clientId) {
             if (!_telnetClients[clientId]->connected()) {
                 _telnetClients[clientId] = nullptr;
-                wifiReconnectCheck();
                 DEBUG_MSG_P(PSTR("[TELNET] Client #%d disconnected\n"), clientId);
+                wifiApCheck();
             }
         }
     });
@@ -221,8 +229,9 @@ void AsyncBufferedClient::_addBuffer() {
 
 size_t AsyncBufferedClient::write(const char* data, size_t size) {
 
-    if (_buffers.size() > AsyncBufferedClient::BUFFERS_MAX) return 0;
+    if (_buffers.size() > AsyncBufferedClient::BuffersMax) return 0;
 
+    // TODO: just waiting for onPoll is insufficient, we need to push data asap
     size_t written = 0;
     if (_buffers.empty()) {
         written = _client->add(data, size);
@@ -345,22 +354,13 @@ void _telnetData(unsigned char clientId, char * data, size_t len) {
 
     // Inject command
     #if TERMINAL_SUPPORT
-        terminalInject((void*)data, len);
+        terminalInject(reinterpret_cast<const char*>(data), len);
     #endif
 }
 
 void _telnetNotifyConnected(unsigned char i) {
 
     DEBUG_MSG_P(PSTR("[TELNET] Client #%u connected\n"), i);
-
-    // If there is no terminal support automatically dump info and crash data
-    #if DEBUG_SUPPORT
-    #if not TERMINAL_SUPPORT
-        wifiDebug();
-        crashDump(terminalDefaultStream());
-        crashClear();
-    #endif
-    #endif
 
     if (!isEspurnaCore()) {
         _telnetClientsAuth[i] = !_telnetAuth;
@@ -375,7 +375,9 @@ void _telnetNotifyConnected(unsigned char i) {
         _telnetClientsAuth[i] = true;
     }
 
-    wifiReconnectCheck();
+#if DEBUG_SUPPORT
+    crashResetReason(terminalDefaultStream());
+#endif
 
 }
 

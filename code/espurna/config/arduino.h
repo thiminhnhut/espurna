@@ -27,6 +27,7 @@
 //#define ARNIEX_SWIFITCH
 //#define AUTHOMETION_LYT8266
 //#define AVATTO_NAS_WR01W
+//#define BENEXMART_GU53_RGBWW
 //#define BESTEK_MRJ1011
 //#define BH_ONOFRE
 //#define BLITZWOLF_BWSHP5
@@ -64,6 +65,8 @@
 //#define GENERIC_GU10
 //#define GENERIC_V9261F
 //#define GIZWITS_WITTY_CLOUD
+//#define GOSUND_SP111
+//#define GOSUND_P1
 //#define GOSUND_WP3
 //#define GOSUND_WS1
 //#define GREEN_ESP8266RELAY
@@ -177,7 +180,10 @@
 //#define YJZK_SWITCH_1CH
 //#define YJZK_SWITCH_2CH
 //#define YJZK_SWITCH_3CH
-//#define ZHILDE_EU44_W
+//#define ZHILDE_44EU_W
+//#define ZHILDE_64EU_W
+//#define FCMILA_E27_7W_RGBW
+//#define LSC_E27_10W_WHITE
 
 //--------------------------------------------------------------------------------
 // Features (values below are non-default values)
@@ -185,7 +191,6 @@
 
 //#define ALEXA_SUPPORT          0
 //#define API_SUPPORT            0
-//#define BROKER_SUPPORT         0
 //#define BUTTON_SUPPORT         0
 //#define DEBUG_SERIAL_SUPPORT   0
 //#define DEBUG_TELNET_SUPPORT   0
@@ -198,16 +203,15 @@
 //#define INFLUXDB_SUPPORT       1
 //#define IR_SUPPORT             1
 //#define LED_SUPPORT            0
-//#define LLMNR_SUPPORT          1  // Only with latest Arduino Core
-//#define MDNS_CLIENT_SUPPORT    1
+//#define LLMNR_SUPPORT          1
 //#define MDNS_SERVER_SUPPORT    0
 //#define MQTT_SUPPORT           0
-//#define NETBIOS_SUPPORT        1  // Only with latest Arduino Core
+//#define NETBIOS_SUPPORT        1
 //#define NOFUSS_SUPPORT         1
 //#define NTP_SUPPORT            0
 //#define OTA_ARDUINOOTA_SUPPORT 1
 //#define RFM69_SUPPORT          1
-//#define RF_SUPPORT             1
+//#define RFB_SUPPORT            1
 //#define RPN_RULES_SUPPORT      0
 //#define SCHEDULER_SUPPORT      0
 //#define SPIFFS_SUPPORT         1

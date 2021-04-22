@@ -13,16 +13,65 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 #include <vector>
 
 #include "system.h"
-#include "web.h"
 #include "ntp.h"
 #include "utils.h"
+#include "web.h"
+#include "wifi.h"
 #include "ws_internal.h"
 
 #include "libs/WebSocketIncommingBuffer.h"
 
 AsyncWebSocket _ws("/ws");
-Ticker _ws_defer;
+
+// -----------------------------------------------------------------------------
+// Periodic updates
+// -----------------------------------------------------------------------------
+
 uint32_t _ws_last_update = 0;
+
+void _wsResetUpdateTimer() {
+    _ws_last_update = millis() + WS_UPDATE_INTERVAL;
+}
+
+void _wsUpdate(JsonObject& root) {
+    root["heap"] = systemFreeHeap();
+    root["uptime"] = systemUptime();
+    root["rssi"] = WiFi.RSSI();
+    root["loadaverage"] = systemLoadAverage();
+    if (ADC_MODE_VALUE == ADC_VCC) {
+        root["vcc"] = ESP.getVcc();
+    } else {
+        root["vcc"] = "N/A (TOUT) ";
+    }
+#if NTP_SUPPORT
+    // XXX: arduinojson default config stores:
+    // - double as float
+    // - int64_t as int32_t
+    // Simply send the string...
+    if (ntpSynced()) {
+        auto info = ntpInfo();
+
+        constexpr size_t TimeSize { sizeof(time_t) };
+        const char* const fmt = (TimeSize == 8) ? "%lld" : "%ld";
+        char buffer[TimeSize * 4];
+        sprintf(buffer, fmt, info.now);
+        root["now"] = String(buffer);
+
+        root["nowString"] = info.utc;
+        root["nowLocalString"] = info.local.length()
+            ? info.local
+            : info.utc;
+    }
+#endif
+}
+
+void _wsDoUpdate(const bool connected) {
+    if (!connected) return;
+    if (millis() - _ws_last_update > WS_UPDATE_INTERVAL) {
+        _ws_last_update = millis();
+        wsSend(_wsUpdate);
+    }
+}
 
 // -----------------------------------------------------------------------------
 // WS callbacks
@@ -115,22 +164,26 @@ ws_callbacks_t& ws_callbacks_t::onKeyCheck(ws_on_keycheck_callback_f cb) {
 // WS authentication
 // -----------------------------------------------------------------------------
 
-WsTicket _ws_tickets[WS_BUFFER_SIZE];
+constexpr size_t WsMaxClients { WS_MAX_CLIENTS };
 
-void _onAuth(AsyncWebServerRequest *request) {
+WsTicket _ws_tickets[WsMaxClients];
 
+void _onAuth(AsyncWebServerRequest* request) {
     webLog(request);
-    if (!webAuthenticate(request)) return request->requestAuthentication();
+    if (!webAuthenticate(request)) {
+        return request->requestAuthentication();
+    }
 
     IPAddress ip = request->client()->remoteIP();
     unsigned long now = millis();
-    unsigned short index;
-    for (index = 0; index < WS_BUFFER_SIZE; index++) {
+
+    size_t index;
+    for (index = 0; index < WsMaxClients; ++index) {
         if (_ws_tickets[index].ip == ip) break;
         if (_ws_tickets[index].timestamp == 0) break;
         if (now - _ws_tickets[index].timestamp > WS_TIMEOUT) break;
     }
-    if (index == WS_BUFFER_SIZE) {
+    if (index == WS_MAX_CLIENTS) {
         request->send(429);
     } else {
         _ws_tickets[index].ip = ip;
@@ -140,22 +193,30 @@ void _onAuth(AsyncWebServerRequest *request) {
 
 }
 
-bool _wsAuth(AsyncWebSocketClient * client) {
+void _wsAuthUpdate(AsyncWebSocketClient* client) {
+    IPAddress ip = client->remoteIP();
+    for (auto& ticket : _ws_tickets) {
+        if (ticket.ip == ip) {
+            ticket.timestamp = millis();
+            break;
+        }
+    }
+}
 
+bool _wsAuth(AsyncWebSocketClient* client) {
     IPAddress ip = client->remoteIP();
     unsigned long now = millis();
-    unsigned short index = 0;
 
-    for (index = 0; index < WS_BUFFER_SIZE; index++) {
-        if ((_ws_tickets[index].ip == ip) && (now - _ws_tickets[index].timestamp < WS_TIMEOUT)) break;
+    for (auto& ticket : _ws_tickets) {
+        if (ticket.ip == ip) {
+            if (now - ticket.timestamp < WS_TIMEOUT) {
+                return true;
+            }
+            return false;
+        }
     }
 
-    if (index == WS_BUFFER_SIZE) {
-        return false;
-    }
-
-    return true;
-
+    return false;
 }
 
 // -----------------------------------------------------------------------------
@@ -195,9 +256,12 @@ void WsDebug::send(bool connected) {
 }
 
 bool wsDebugSend(const char* prefix, const char* message) {
-    if (!wsConnected()) return false;
-    _ws_debug.add(prefix, message);
-    return true;
+    if ((wifiConnected() || wifiApStations()) && wsConnected()) {
+        _ws_debug.add(prefix, message);
+        return true;
+    }
+
+    return false;
 }
 
 #endif
@@ -232,9 +296,9 @@ bool _wsStore(const String& key, JsonArray& values) {
     unsigned char index = 0;
     for (auto& element : values) {
         const auto value = element.as<String>();
-        const auto keyobj = settings_key_t {key, index};
-        if (!hasSetting(keyobj) || value != getSetting(keyobj)) {
-            setSetting(keyobj, value);
+        auto setting = SettingsKey {key, index};
+        if (!hasSetting(setting) || value != getSetting(setting)) {
+            setSetting(setting, value);
             changed = true;
         }
         ++index;
@@ -282,7 +346,7 @@ void _wsParse(AsyncWebSocketClient *client, uint8_t * payload, size_t length) {
     JsonObject& root = jsonBuffer.parseObject((char *) payload);
     if (!root.success()) {
         DEBUG_MSG_P(PSTR("[WEBSOCKET] JSON parsing error\n"));
-        wsSend_P(client_id, PSTR("{\"message\": 3}"));
+        wsSend_P(client_id, PSTR("{\"message\": \"Cannot parse the data!\"}"));
         return;
     }
 
@@ -290,52 +354,46 @@ void _wsParse(AsyncWebSocketClient *client, uint8_t * payload, size_t length) {
 
     const char* action = root["action"];
     if (action) {
-
         if (strcmp(action, "ping") == 0) {
             wsSend_P(client_id, PSTR("{\"pong\": 1}"));
+            _wsAuthUpdate(client);
             return;
         }
 
-        DEBUG_MSG_P(PSTR("[WEBSOCKET] Requested action: %s\n"), action);
-
         if (strcmp(action, "reboot") == 0) {
-            deferredReset(100, CUSTOM_RESET_WEB);
+            deferredReset(100, CustomResetReason::Web);
             return;
         }
 
         if (strcmp(action, "reconnect") == 0) {
-            _ws_defer.once_ms(100, wifiDisconnect);
+            static Ticker timer;
+            timer.once_ms_scheduled(100, []() {
+                wifiDisconnect();
+                yield();
+            });
             return;
         }
 
         if (strcmp(action, "factory_reset") == 0) {
-            DEBUG_MSG_P(PSTR("\n\nFACTORY RESET\n\n"));
-            resetSettings();
-            deferredReset(100, CUSTOM_RESET_FACTORY);
+            factoryReset();
             return;
         }
 
         JsonObject& data = root["data"];
         if (data.success()) {
+            if (strcmp(action, "restore") == 0) {
+                if (settingsRestoreJson(data)) {
+                    wsSend_P(client_id, PSTR("{\"message\": \"Changes saved, you should be able to reboot now.\"}"));
+                } else {
+                    wsSend_P(client_id, PSTR("{\"message\": \"Could not restore the configuration, see the debug log for more information.\"}"));
+                }
+                return;
+            }
 
-            // Callbacks
             for (auto& callback : _ws_callbacks.on_action) {
                 callback(client_id, action, data);
             }
-
-            // Restore configuration via websockets
-            if (strcmp(action, "restore") == 0) {
-                if (settingsRestoreJson(data)) {
-                    wsSend_P(client_id, PSTR("{\"message\": 5}"));
-                } else {
-                    wsSend_P(client_id, PSTR("{\"message\": 4}"));
-                }
-            }
-
-            return;
-
         }
-
     };
 
     // Check configuration -----------------------------------------------------
@@ -354,7 +412,6 @@ void _wsParse(AsyncWebSocketClient *client, uint8_t * payload, size_t length) {
             String key = kv.key;
             JsonVariant& value = kv.value;
 
-            // Check password
             if (key == "adminPass") {
                 if (!value.is<JsonArray&>()) continue;
                 JsonArray& values = value.as<JsonArray&>();
@@ -367,10 +424,15 @@ void _wsParse(AsyncWebSocketClient *client, uint8_t * payload, size_t length) {
                         wsSend_P(client_id, PSTR("{\"action\": \"reload\"}"));
                     }
                 } else {
-                    wsSend_P(client_id, PSTR("{\"message\": 7}"));
+                    wsSend_P(client_id, PSTR("{\"message\": \"Passwords do not match!\"}"));
                 }
                 continue;
             }
+#if NTP_SUPPORT
+            else if (key == "ntpTZ") {
+                _wsResetUpdateTimer();
+            }
+#endif
 
             if (!_wsCheckKey(key, value)) {
                 delSetting(key);
@@ -400,43 +462,16 @@ void _wsParse(AsyncWebSocketClient *client, uint8_t * payload, size_t length) {
             // Persist settings
             saveSettings();
 
-            wsSend_P(client_id, PSTR("{\"message\": 8}"));
+            wsSend_P(client_id, PSTR("{\"saved\": true, \"message\": \"Changes saved.\"}"));
 
         } else {
 
-            wsSend_P(client_id, PSTR("{\"message\": 9}"));
+            wsSend_P(client_id, PSTR("{\"message\": \"No changes detected.\"}"));
 
         }
 
     }
 
-}
-
-void _wsUpdate(JsonObject& root) {
-    root["heap"] = getFreeHeap();
-    root["uptime"] = getUptime();
-    root["rssi"] = WiFi.RSSI();
-    root["loadaverage"] = systemLoadAverage();
-    if (ADC_MODE_VALUE == ADC_VCC) {
-        root["vcc"] = ESP.getVcc();
-    } else {
-        root["vcc"] = "N/A (TOUT) ";
-    }
-    #if NTP_SUPPORT
-        if (ntpSynced()) root["now"] = now();
-    #endif
-}
-
-void _wsResetUpdateTimer() {
-    _ws_last_update = millis() + WS_UPDATE_INTERVAL;
-}
-
-void _wsDoUpdate(const bool connected) {
-    if (!connected) return;
-    if (millis() - _ws_last_update > WS_UPDATE_INTERVAL) {
-        _ws_last_update = millis();
-        wsSend(_wsUpdate);
-    }
 }
 
 bool _wsOnKeyCheck(const char * key, JsonVariant& value) {
@@ -451,22 +486,19 @@ bool _wsOnKeyCheck(const char * key, JsonVariant& value) {
 void _wsOnConnected(JsonObject& root) {
     root["webMode"] = WEB_MODE_NORMAL;
 
-    root["app_name"] = APP_NAME;
-    root["app_version"] = APP_VERSION;
+    root["app_name"] = getAppName();
+    root["app_version"] = getVersion();
     root["app_build"] = buildTime();
-    #if defined(APP_REVISION)
-        root["app_revision"] = APP_REVISION;
-    #endif
-    root["device"] = getDevice().c_str();
-    root["manufacturer"] = getManufacturer().c_str();
+    root["device"] = getDevice();
+    root["manufacturer"] = getManufacturer();
     root["chipid"] = getChipId().c_str();
-    root["mac"] = WiFi.macAddress();
+    root["mac"] = getFullChipId().c_str();
     root["bssid"] = WiFi.BSSIDstr();
     root["channel"] = WiFi.channel();
-    root["hostname"] = getSetting("hostname");
+    root["hostname"] = getSetting("hostname", getIdentifier());
     root["desc"] = getSetting("desc");
-    root["network"] = getNetwork();
-    root["deviceip"] = getIP();
+    root["network"] = wifiStaSsid();
+    root["deviceip"] = wifiStaIp().toString();
     root["sketch_size"] = ESP.getSketchSize();
     root["free_size"] = ESP.getFreeSketchSpace();
     root["sdk"] = ESP.getSdkVersion();
@@ -474,8 +506,6 @@ void _wsOnConnected(JsonObject& root) {
 
     root["webPort"] = getSetting("webPort", WEB_PORT);
     root["wsAuth"] = getSetting("wsAuth", 1 == WS_AUTHENTICATION);
-    root["hbMode"] = getSetting("hbMode", HEARTBEAT_MODE);
-    root["hbInterval"] = getSetting("hbInterval", HEARTBEAT_INTERVAL);
 }
 
 void _wsConnected(uint32_t client_id) {
@@ -503,21 +533,20 @@ void _wsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventTy
     if (type == WS_EVT_CONNECT) {
 
         client->_tempObject = nullptr;
+        String ip = client->remoteIP().toString();
 
-        #ifndef NOWSAUTH
-            if (!_wsAuth(client)) {
-                wsSend_P(client->id(), PSTR("{\"message\": 10}"));
-                DEBUG_MSG_P(PSTR("[WEBSOCKET] Validation check failed\n"));
-                client->close();
-                return;
-            }
-        #endif
+#ifndef NOWSAUTH
+        if (!_wsAuth(client)) {
+            wsSend_P(client->id(), PSTR("{\"action\": \"reload\", \"message\": \"Session expired.\"}"));
+            DEBUG_MSG_P(PSTR("[WEBSOCKET] #%u session expired for %s\n"), client->id(), ip.c_str());
+            client->close();
+            return;
+        }
+#endif
 
-        IPAddress ip = client->remoteIP();
-        DEBUG_MSG_P(PSTR("[WEBSOCKET] #%u connected, ip: %d.%d.%d.%d, url: %s\n"), client->id(), ip[0], ip[1], ip[2], ip[3], server->url());
+        DEBUG_MSG_P(PSTR("[WEBSOCKET] #%u connected, ip: %s, url: %s\n"), client->id(), ip.c_str(), server->url());
         _wsConnected(client->id());
         _wsResetUpdateTimer();
-        wifiReconnectCheck();
         client->_tempObject = new WebSocketIncommingBuffer(_wsParse, true);
 
     } else if(type == WS_EVT_DISCONNECT) {
@@ -525,7 +554,7 @@ void _wsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventTy
         if (client->_tempObject) {
             delete (WebSocketIncommingBuffer *) client->_tempObject;
         }
-        wifiReconnectCheck();
+        wifiApCheck();
 
     } else if(type == WS_EVT_ERROR) {
         DEBUG_MSG_P(PSTR("[WEBSOCKET] #%u error(%u): %s\n"), client->id(), *((uint16_t*)arg), (char*)data);
@@ -667,7 +696,7 @@ void wsSend(const char * payload) {
     }
 }
 
-void wsSend_P(PGM_P payload) {
+void wsSend_P(const char* payload) {
     if (_ws.count() > 0) {
         char buffer[strlen_P(payload)];
         strcpy_P(buffer, payload);
@@ -689,7 +718,7 @@ void wsSend(uint32_t client_id, const char * payload) {
     _ws.text(client_id, payload);
 }
 
-void wsSend_P(uint32_t client_id, PGM_P payload) {
+void wsSend_P(uint32_t client_id, const char* payload) {
     char buffer[strlen_P(payload)];
     strcpy_P(buffer, payload);
     _ws.text(client_id, buffer);
@@ -698,7 +727,7 @@ void wsSend_P(uint32_t client_id, PGM_P payload) {
 void wsSetup() {
 
     _ws.onEvent(_wsEvent);
-    webServer()->addHandler(&_ws);
+    webServer().addHandler(&_ws);
 
     // CORS
     const String webDomain = getSetting("webDomain", WEB_REMOTE_DOMAIN);
@@ -707,7 +736,7 @@ void wsSetup() {
         DefaultHeaders::Instance().addHeader("Access-Control-Allow-Credentials", "true");
     }
 
-    webServer()->on("/auth", HTTP_GET, _onAuth);
+    webServer().on("/auth", HTTP_GET, _onAuth);
 
     wsRegister()
         .onConnected(_wsOnConnected)

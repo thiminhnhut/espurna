@@ -11,7 +11,7 @@ Updated secure client support by Niek van der Maas < mail at niekvandermaas dot 
 
 #if MQTT_SUPPORT
 
-#include <vector>
+#include <forward_list>
 #include <utility>
 #include <Ticker.h>
 
@@ -70,12 +70,13 @@ Updated secure client support by Niek van der Maas < mail at niekvandermaas dot 
 #endif // MQTT_LIBRARY == MQTT_ASYNCMQTTCLIENT
 
 
-bool _mqtt_enabled = MQTT_ENABLED;
-bool _mqtt_use_json = false;
-unsigned long _mqtt_reconnect_delay = MQTT_RECONNECT_DELAY_MIN;
 unsigned long _mqtt_last_connection = 0;
 AsyncClientState _mqtt_state = AsyncClientState::Disconnected;
-bool _mqtt_retain_skipped = false;
+bool _mqtt_skip_messages = false;
+unsigned long _mqtt_skip_time = MQTT_SKIP_TIME;
+unsigned long _mqtt_reconnect_delay = MQTT_RECONNECT_DELAY_MIN;
+bool _mqtt_enabled = MQTT_ENABLED;
+bool _mqtt_use_json = false;
 bool _mqtt_retain = MQTT_RETAIN;
 int _mqtt_qos = MQTT_QOS;
 int _mqtt_keepalive = MQTT_KEEPALIVE;
@@ -91,22 +92,69 @@ String _mqtt_server;
 uint16_t _mqtt_port;
 String _mqtt_clientid;
 
+#if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
+
+struct MqttPidCallback {
+    uint16_t pid;
+    mqtt_pid_callback_f run;
+};
+
+using MqttPidCallbacks = std::forward_list<MqttPidCallback>;
+
+MqttPidCallbacks _mqtt_publish_callbacks;
+MqttPidCallbacks _mqtt_subscribe_callbacks;
+
+#endif
+
+std::forward_list<heartbeat::Callback> _mqtt_heartbeat_callbacks;
+heartbeat::Mode _mqtt_heartbeat_mode;
+heartbeat::Seconds _mqtt_heartbeat_interval;
+
 String _mqtt_payload_online;
 String _mqtt_payload_offline;
 
-std::vector<mqtt_callback_f> _mqtt_callbacks;
-
-struct mqtt_message_t {
-    static const unsigned char END = 255;
-    unsigned char parent = END;
-    char * topic;
-    char * message = NULL;
-};
-std::vector<mqtt_message_t> _mqtt_queue;
-Ticker _mqtt_flush_ticker;
+std::forward_list<mqtt_callback_f> _mqtt_callbacks;
 
 // -----------------------------------------------------------------------------
-// Private
+// JSON payload
+// -----------------------------------------------------------------------------
+
+struct MqttPayload {
+    MqttPayload() = delete;
+    MqttPayload(const MqttPayload&) = default;
+
+    // TODO: replace String implementation with Core v3 (or just use newer Core)
+    //       2.7.x still has basic Arduino String move ctor that is not noexcept
+    MqttPayload(MqttPayload&& other) noexcept :
+        _topic(std::move(other._topic)),
+        _message(std::move(other._message))
+    {}
+
+    template <typename Topic, typename Message>
+    MqttPayload(Topic&& topic, Message&& message) :
+        _topic(std::forward<Topic>(topic)),
+        _message(std::forward<Message>(message))
+    {}
+
+    const String& topic() const {
+        return _topic;
+    }
+
+    const String& message() const {
+        return _message;
+    }
+
+private:
+    String _topic;
+    String _message;
+};
+
+size_t _mqtt_json_payload_count { 0ul };
+std::forward_list<MqttPayload> _mqtt_json_payload;
+Ticker _mqtt_json_payload_flush;
+
+// -----------------------------------------------------------------------------
+// Secure client handlers
 // -----------------------------------------------------------------------------
 
 #if SECURE_CLIENT == SECURE_CLIENT_AXTLS
@@ -144,6 +192,23 @@ SecureClientConfig _mqtt_sc_config {
 };
 #endif
 
+// -----------------------------------------------------------------------------
+// Client configuration & setup
+// -----------------------------------------------------------------------------
+
+// TODO: MQTT standard has some weird rules about session persistance on the broker
+// ref. 3.1.2.4 Clean Session, where we are uniquely identified by the client-id:
+// - subscriptions that are no longer useful are still there
+//   unsub # will be acked, but we were never subbed to # to begin with ...
+// - we *will* receive messages that were sent using qos 1 or 2 while we were offline
+//   which is only sort-of good, but MQTT broker v3 will never timeout those messages.
+//   this would be the main reason for turning ON the clean session
+// - connecting with clean session ON will purge existing session *and* also prevent
+//   the broker from caching the messages after the current connection ends.
+//   there is no middle-ground, where previous session is removed but the current one is preserved
+//   so, turning it ON <-> OFF during runtime is not very useful :/
+//
+// Pending MQTT v5 client
 
 #if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
 
@@ -153,6 +218,7 @@ void _mqttSetupAsyncClient(bool secure = false) {
     _mqtt.setClientId(_mqtt_clientid.c_str());
     _mqtt.setKeepAlive(_mqtt_keepalive);
     _mqtt.setCleanSession(false);
+
     _mqtt.setWill(_mqtt_will.c_str(), _mqtt_qos, _mqtt_retain, _mqtt_payload_offline.c_str());
 
     if (_mqtt_user.length() && _mqtt_pass.length()) {
@@ -298,7 +364,7 @@ void _mqttConfigure() {
     {
         String setter = getSetting("mqttSetter", MQTT_SETTER);
         String getter = getSetting("mqttGetter", MQTT_GETTER);
-        bool forward = !setter.equals(getter) && RELAY_REPORT_STATUS;
+        bool forward = !setter.equals(getter);
 
         _mqttApplySetting(_mqtt_setter, setter);
         _mqttApplySetting(_mqtt_getter, getter);
@@ -314,7 +380,7 @@ void _mqttConfigure() {
 
         const auto qos = getSetting("mqttQoS", MQTT_QOS);
         const bool retain = getSetting("mqttRetain", 1 == MQTT_RETAIN);
-        
+
         // Note: MQTT spec defines this as 2 bytes
         const auto keepalive = constrain(
             getSetting("mqttKeep", MQTT_KEEPALIVE),
@@ -330,10 +396,7 @@ void _mqttConfigure() {
         _mqttApplySetting(_mqtt_retain, retain);
         _mqttApplySetting(_mqtt_keepalive, keepalive);
         _mqttApplySetting(_mqtt_clientid, id);
-    }
 
-    // MQTT WILL
-    {
         _mqttApplyTopic(_mqtt_will, MQTT_TOPIC_STATUS);
     }
 
@@ -342,6 +405,14 @@ void _mqttConfigure() {
         _mqttApplySetting(_mqtt_use_json, getSetting("mqttUseJson", 1 == MQTT_USE_JSON));
         _mqttApplyTopic(_mqtt_topic_json, MQTT_TOPIC_JSON);
     }
+
+    _mqttApplySetting(_mqtt_heartbeat_mode,
+            getSetting("mqttHbMode", heartbeat::currentMode()));
+    _mqttApplySetting(_mqtt_heartbeat_interval,
+            getSetting("mqttHbIntvl", heartbeat::currentInterval()));
+
+    // Skip messages in a small window right after the connection
+    _mqtt_skip_time = getSetting("mqttSkipTime", MQTT_SKIP_TIME);
 
     // Custom payload strings
     settingsProcessConfig({
@@ -433,6 +504,7 @@ void _mqttInfo() {
             );
         }
     }
+
 }
 
 // -----------------------------------------------------------------------------
@@ -504,78 +576,177 @@ void _mqttInitCommands() {
 // -----------------------------------------------------------------------------
 
 void _mqttCallback(unsigned int type, const char * topic, const char * payload) {
-
     if (type == MQTT_CONNECT_EVENT) {
-
-        // Subscribe to internal action topics
         mqttSubscribe(MQTT_TOPIC_ACTION);
-
-        // Flag system to send heartbeat
-        systemSendHeartbeat();
-
     }
 
     if (type == MQTT_MESSAGE_EVENT) {
-
-        // Match topic
-        String t = mqttMagnitude((char *) topic);
-
-        // Actions
+        String t = mqttMagnitude(topic);
         if (t.equals(MQTT_TOPIC_ACTION)) {
             rpcHandleAction(payload);
         }
+    }
+}
 
+bool _mqttHeartbeat(heartbeat::Mask mask) {
+    // No point retrying, since we will be re-scheduled on connection
+    if (!mqttConnected()) {
+        return true;
     }
 
+#if NTP_SUPPORT
+    // Backported from the older utils implementation.
+    // Wait until the time is synced to avoid sending partial report *and*
+    // as a result, wait until the next interval to actually send the datetime string.
+    if ((mask & heartbeat::Report::Datetime) && !ntpSynced()) {
+        return false;
+    }
+#endif
+
+    // TODO: rework old HEARTBEAT_REPEAT_STATUS?
+    // for example: send full report once, send only the dynamic data after that
+    // (interval, hostname, description, ssid, bssid, ip, mac, rssi, uptime, datetime, heap, loadavg, vcc)
+    // otherwise, it is still possible by setting everything to 0 *but* the Report::Status bit
+    // TODO: per-module mask?
+    // TODO: simply send static data with onConnected, and the rest from here?
+
+    if (mask & heartbeat::Report::Status)
+        mqttSendStatus();
+
+    if (mask & heartbeat::Report::Interval)
+        mqttSend(MQTT_TOPIC_INTERVAL, String(_mqtt_heartbeat_interval.count()).c_str());
+
+    if (mask & heartbeat::Report::App)
+        mqttSend(MQTT_TOPIC_APP, getAppName());
+
+    if (mask & heartbeat::Report::Version)
+        mqttSend(MQTT_TOPIC_VERSION, getVersion());
+
+    if (mask & heartbeat::Report::Board)
+        mqttSend(MQTT_TOPIC_BOARD, getBoardName().c_str());
+
+    if (mask & heartbeat::Report::Hostname)
+        mqttSend(MQTT_TOPIC_HOSTNAME, getSetting("hostname", getIdentifier()).c_str());
+
+    if (mask & heartbeat::Report::Description) {
+        auto desc = getSetting("desc");
+        if (desc.length()) {
+            mqttSend(MQTT_TOPIC_DESCRIPTION, desc.c_str());
+        }
+    }
+
+    if (mask & heartbeat::Report::Ssid)
+        mqttSend(MQTT_TOPIC_SSID, WiFi.SSID().c_str());
+
+    if (mask & heartbeat::Report::Bssid)
+        mqttSend(MQTT_TOPIC_BSSID, WiFi.BSSIDstr().c_str());
+
+    if (mask & heartbeat::Report::Ip)
+        mqttSend(MQTT_TOPIC_IP, wifiStaIp().toString().c_str());
+
+    if (mask & heartbeat::Report::Mac)
+        mqttSend(MQTT_TOPIC_MAC, WiFi.macAddress().c_str());
+
+    if (mask & heartbeat::Report::Rssi)
+        mqttSend(MQTT_TOPIC_RSSI, String(WiFi.RSSI()).c_str());
+
+    if (mask & heartbeat::Report::Uptime)
+        mqttSend(MQTT_TOPIC_UPTIME, String(systemUptime()).c_str());
+
+#if NTP_SUPPORT
+    if (mask & heartbeat::Report::Datetime)
+        mqttSend(MQTT_TOPIC_DATETIME, ntpDateTime().c_str());
+#endif
+
+    if (mask & heartbeat::Report::Freeheap) {
+        auto stats = systemHeapStats();
+        mqttSend(MQTT_TOPIC_FREEHEAP, String(stats.available).c_str());
+    }
+
+    if (mask & heartbeat::Report::Loadavg)
+        mqttSend(MQTT_TOPIC_LOADAVG, String(systemLoadAverage()).c_str());
+
+    if ((mask & heartbeat::Report::Vcc) && (ADC_MODE_VALUE == ADC_VCC))
+        mqttSend(MQTT_TOPIC_VCC, String(ESP.getVcc()).c_str());
+
+    auto status = mqttConnected();
+    for (auto& cb : _mqtt_heartbeat_callbacks) {
+        status = status && cb(mask);
+    }
+
+    return status;
 }
 
 void _mqttOnConnect() {
-
     _mqtt_reconnect_delay = MQTT_RECONNECT_DELAY_MIN;
 
     _mqtt_last_connection = millis();
     _mqtt_state = AsyncClientState::Connected;
-    _mqtt_retain_skipped = false;
 
-    DEBUG_MSG_P(PSTR("[MQTT] Connected!\n"));
-
-    // Clean subscriptions
-    mqttUnsubscribeRaw("#");
+    systemHeartbeat(_mqttHeartbeat, _mqtt_heartbeat_mode, _mqtt_heartbeat_interval);
 
     // Notify all subscribers about the connection
     for (auto& callback : _mqtt_callbacks) {
         callback(MQTT_CONNECT_EVENT, nullptr, nullptr);
     }
 
+    DEBUG_MSG_P(PSTR("[MQTT] Connected!\n"));
 }
 
 void _mqttOnDisconnect() {
+#if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
+    _mqtt_publish_callbacks.clear();
+    _mqtt_subscribe_callbacks.clear();
+#endif
 
-    // Reset reconnection delay
     _mqtt_last_connection = millis();
     _mqtt_state = AsyncClientState::Disconnected;
-    _mqtt_retain_skipped = false;
 
-    DEBUG_MSG_P(PSTR("[MQTT] Disconnected!\n"));
+    systemStopHeartbeat(_mqttHeartbeat);
 
     // Notify all subscribers about the disconnect
     for (auto& callback : _mqtt_callbacks) {
         callback(MQTT_DISCONNECT_EVENT, nullptr, nullptr);
     }
 
+    DEBUG_MSG_P(PSTR("[MQTT] Disconnected!\n"));
 }
+
+#if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
+
+// Run the associated callback when message PID is acknowledged by the broker
+
+void _mqttPidCallback(MqttPidCallbacks& callbacks, uint16_t pid) {
+    if (callbacks.empty()) {
+        return;
+    }
+
+    auto end = callbacks.end();
+    auto prev = callbacks.before_begin();
+    auto it = callbacks.begin();
+
+    while (it != end) {
+        if ((*it).pid == pid) {
+            (*it).run();
+            it = callbacks.erase_after(prev);
+        } else {
+            prev = it;
+            ++it;
+        }
+    }
+}
+
+#endif
 
 // Force-skip everything received in a short window right after connecting to avoid syncronization issues.
 
 bool _mqttMaybeSkipRetained(char* topic) {
-    #if MQTT_SKIP_RETAINED
-        if (!_mqtt_retain_skipped && (millis() - _mqtt_last_connection < MQTT_SKIP_TIME)) {
-            DEBUG_MSG_P(PSTR("[MQTT] Received %s - SKIPPED\n"), topic);
-            return true;
-        }
-    #endif
+    if (_mqtt_skip_messages && (millis() - _mqtt_last_connection < _mqtt_skip_time)) {
+        DEBUG_MSG_P(PSTR("[MQTT] Received %s - SKIPPED\n"), topic);
+        return true;
+    }
 
-    _mqtt_retain_skipped = true;
+    _mqtt_skip_messages = false;
     return false;
 }
 
@@ -645,24 +816,25 @@ void _mqttOnMessage(char* topic, char* payload, unsigned int len) {
     @param topic the full MQTT topic
     @return String object with the magnitude part.
 */
-String mqttMagnitude(char * topic) {
+String mqttMagnitude(const char* topic) {
+    String output;
 
     String pattern = _mqtt_topic + _mqtt_setter;
     int position = pattern.indexOf("#");
-    if (position == -1) return String();
-    String start = pattern.substring(0, position);
-    String end = pattern.substring(position + 1);
 
-    String magnitude = String(topic);
-    if (magnitude.startsWith(start) && magnitude.endsWith(end)) {
-        magnitude.replace(start, "");
-        magnitude.replace(end, "");
-    } else {
-        magnitude = String();
+    if (position >= 0) {
+        String start = pattern.substring(0, position);
+        String end = pattern.substring(position + 1);
+
+        String magnitude(topic);
+        if (magnitude.startsWith(start) && magnitude.endsWith(end)) {
+            magnitude.replace(start, "");
+            magnitude.replace(end, "");
+            output = std::move(magnitude);
+        }
     }
 
-    return magnitude;
-
+    return output;
 }
 
 /**
@@ -673,10 +845,17 @@ String mqttMagnitude(char * topic) {
         or a state topic (false).
     @return String full MQTT topic.
 */
-String mqttTopic(const char * magnitude, bool is_set) {
-    String output = _mqtt_topic;
+String mqttTopic(const char* magnitude, bool is_set) {
+    String output;
+    output.reserve(strlen(magnitude)
+        + _mqtt_topic.length()
+        + _mqtt_setter.length()
+        + _mqtt_getter.length());
+
+    output += _mqtt_topic;
     output.replace("#", magnitude);
     output += is_set ? _mqtt_setter : _mqtt_getter;
+
     return output;
 }
 
@@ -689,225 +868,183 @@ String mqttTopic(const char * magnitude, bool is_set) {
         or a state topic (false).
     @return String full MQTT topic.
 */
-String mqttTopic(const char * magnitude, unsigned int index, bool is_set) {
-    char buffer[strlen(magnitude)+5];
-    snprintf_P(buffer, sizeof(buffer), PSTR("%s/%d"), magnitude, index);
-    return mqttTopic(buffer, is_set);
+String mqttTopic(const char* magnitude, unsigned int index, bool is_set) {
+    String output;
+    output.reserve(strlen(magnitude) + (sizeof(decltype(index)) * 4));
+    output += magnitude;
+    output += '/';
+    output += index;
+    return mqttTopic(output.c_str(), is_set);
 }
 
 // -----------------------------------------------------------------------------
 
-bool mqttSendRaw(const char * topic, const char * message, bool retain) {
+uint16_t mqttSendRaw(const char * topic, const char * message, bool retain, int qos) {
+    constexpr size_t MessageLogMax { 128ul };
 
-    if (!_mqtt.connected()) return false;
-
-    const unsigned int packetId(
-        #if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
-            _mqtt.publish(topic, _mqtt_qos, retain, message)
-        #elif MQTT_LIBRARY == MQTT_LIBRARY_ARDUINOMQTT
-            _mqtt.publish(topic, message, retain, _mqtt_qos)
-        #elif MQTT_LIBRARY == MQTT_LIBRARY_PUBSUBCLIENT
+    if (_mqtt.connected()) {
+        const unsigned int packetId {
+#if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
+            _mqtt.publish(topic, qos, retain, message)
+#elif MQTT_LIBRARY == MQTT_LIBRARY_ARDUINOMQTT
+            _mqtt.publish(topic, message, retain, qos)
+#elif MQTT_LIBRARY == MQTT_LIBRARY_PUBSUBCLIENT
             _mqtt.publish(topic, message, retain)
-        #endif
-    );
+#endif
+        };
 
-    const size_t message_len = strlen(message);
-    if (message_len > 128) {
-        DEBUG_MSG_P(PSTR("[MQTT] Sending %s => (%u bytes) (PID %u)\n"), topic, message_len, packetId);
-    } else {
-        DEBUG_MSG_P(PSTR("[MQTT] Sending %s => %s (PID %u)\n"), topic, message, packetId);
+        const size_t message_len = strlen(message);
+        if (message_len > MessageLogMax) {
+            DEBUG_MSG_P(PSTR("[MQTT] Sending %s => (%u bytes) (PID %u)\n"), topic, message_len, packetId);
+        } else {
+            DEBUG_MSG_P(PSTR("[MQTT] Sending %s => %s (PID %u)\n"), topic, message, packetId);
+        }
+
+        return packetId;
     }
 
-    return (packetId > 0);
-
+    return false;
 }
 
-
-bool mqttSendRaw(const char * topic, const char * message) {
-    return mqttSendRaw (topic, message, _mqtt_retain);
+uint16_t mqttSendRaw(const char * topic, const char * message, bool retain) {
+    return mqttSendRaw(topic, message, retain, _mqtt_qos);
 }
 
-void mqttSend(const char * topic, const char * message, bool force, bool retain) {
+uint16_t mqttSendRaw(const char * topic, const char * message) {
+    return mqttSendRaw(topic, message, _mqtt_retain, _mqtt_qos);
+}
 
-    bool useJson = force ? false : _mqtt_use_json;
-
-    // Equeue message
-    if (useJson) {
-
-        // Enqueue new message
+bool mqttSend(const char * topic, const char * message, bool force, bool retain) {
+    if (!force && _mqtt_use_json) {
         mqttEnqueue(topic, message);
-
-        // Reset flush timer
-        _mqtt_flush_ticker.once_ms(MQTT_USE_JSON_DELAY, mqttFlush);
-
-    // Send it right away
-    } else {
-        mqttSendRaw(mqttTopic(topic, false).c_str(), message, retain);
-
+        _mqtt_json_payload_flush.once_ms(MQTT_USE_JSON_DELAY, mqttFlush);
+        return true;
     }
 
+    return mqttSendRaw(mqttTopic(topic, false).c_str(), message, retain) > 0;
 }
 
-void mqttSend(const char * topic, const char * message, bool force) {
-    mqttSend(topic, message, force, _mqtt_retain);
+bool mqttSend(const char * topic, const char * message, bool force) {
+    return mqttSend(topic, message, force, _mqtt_retain);
 }
 
-void mqttSend(const char * topic, const char * message) {
-    mqttSend(topic, message, false);
+bool mqttSend(const char * topic, const char * message) {
+    return mqttSend(topic, message, false);
 }
 
-void mqttSend(const char * topic, unsigned int index, const char * message, bool force, bool retain) {
+bool mqttSend(const char * topic, unsigned int index, const char * message, bool force, bool retain) {
     char buffer[strlen(topic)+5];
     snprintf_P(buffer, sizeof(buffer), PSTR("%s/%d"), topic, index);
-    mqttSend(buffer, message, force, retain);
+    return mqttSend(buffer, message, force, retain);
 }
 
-void mqttSend(const char * topic, unsigned int index, const char * message, bool force) {
-    mqttSend(topic, index, message, force, _mqtt_retain);
+bool mqttSend(const char * topic, unsigned int index, const char * message, bool force) {
+    return mqttSend(topic, index, message, force, _mqtt_retain);
 }
 
-void mqttSend(const char * topic, unsigned int index, const char * message) {
-    mqttSend(topic, index, message, false);
+bool mqttSend(const char * topic, unsigned int index, const char * message) {
+    return mqttSend(topic, index, message, false);
 }
 
 // -----------------------------------------------------------------------------
 
-unsigned char _mqttBuildTree(JsonObject& root, char parent) {
-
-    unsigned char count = 0;
-
-    // Add enqueued messages
-    for (unsigned char i=0; i<_mqtt_queue.size(); i++) {
-        mqtt_message_t element = _mqtt_queue[i];
-        if (element.parent == parent) {
-            ++count;
-            JsonObject& elements = root.createNestedObject(element.topic);
-            unsigned char num = _mqttBuildTree(elements, i);
-            if (0 == num) {
-                if (isNumber(element.message)) {
-                    double value = atof(element.message);
-                    if (value == int(value)) {
-                        root.set(element.topic, int(value));
-                    } else {
-                        root.set(element.topic, value);
-                    }
-                } else {
-                    root.set(element.topic, element.message);
-                }
-            }
-        }
-    }
-
-    return count;
-
-}
+constexpr size_t MqttJsonPayloadBufferSize { 1024ul };
 
 void mqttFlush() {
+    if (!_mqtt.connected()) {
+        return;
+    }
 
-    if (!_mqtt.connected()) return;
-    if (_mqtt_queue.size() == 0) return;
+    if (_mqtt_json_payload.empty()) {
+        return;
+    }
 
-    // Build tree recursively
-    DynamicJsonBuffer jsonBuffer(1024);
+    DynamicJsonBuffer jsonBuffer(MqttJsonPayloadBufferSize);
     JsonObject& root = jsonBuffer.createObject();
-    _mqttBuildTree(root, mqtt_message_t::END);
 
-    // Add extra propeties
-    #if NTP_SUPPORT && MQTT_ENQUEUE_DATETIME
-        if (ntpSynced()) root[MQTT_TOPIC_TIME] = ntpDateTime();
-    #endif
-    #if MQTT_ENQUEUE_MAC
-        root[MQTT_TOPIC_MAC] = WiFi.macAddress();
-    #endif
-    #if MQTT_ENQUEUE_HOSTNAME
-        root[MQTT_TOPIC_HOSTNAME] = getSetting("hostname");
-    #endif
-    #if MQTT_ENQUEUE_IP
-        root[MQTT_TOPIC_IP] = getIP();
-    #endif
-    #if MQTT_ENQUEUE_MESSAGE_ID
-        root[MQTT_TOPIC_MESSAGE_ID] = (Rtcmem->mqtt)++;
-    #endif
+#if NTP_SUPPORT && MQTT_ENQUEUE_DATETIME
+    if (ntpSynced()) {
+        root[MQTT_TOPIC_DATETIME] = ntpDateTime();
+    }
+#endif
+#if MQTT_ENQUEUE_MAC
+    root[MQTT_TOPIC_MAC] = WiFi.macAddress();
+#endif
+#if MQTT_ENQUEUE_HOSTNAME
+    root[MQTT_TOPIC_HOSTNAME] = getSetting("hostname", getIdentifier());
+#endif
+#if MQTT_ENQUEUE_IP
+    root[MQTT_TOPIC_IP] = wifiStaIp().toString();
+#endif
+#if MQTT_ENQUEUE_MESSAGE_ID
+    root[MQTT_TOPIC_MESSAGE_ID] = (Rtcmem->mqtt)++;
+#endif
 
-    // Send
+    for (auto& payload : _mqtt_json_payload) {
+        root[payload.topic().c_str()] = payload.message().c_str();
+    }
+
     String output;
     root.printTo(output);
+
     jsonBuffer.clear();
+    _mqtt_json_payload_count = 0;
+    _mqtt_json_payload.clear();
 
     mqttSendRaw(_mqtt_topic_json.c_str(), output.c_str(), false);
-
-    // Clear queue
-    for (unsigned char i = 0; i < _mqtt_queue.size(); i++) {
-        mqtt_message_t element = _mqtt_queue[i];
-        free(element.topic);
-        if (element.message) {
-            free(element.message);
-        }
-    }
-    _mqtt_queue.clear();
-
 }
 
-int8_t mqttEnqueue(const char * topic, const char * message, unsigned char parent) {
-
+void mqttEnqueue(const char* topic, const char* message) {
     // Queue is not meant to send message "offline"
     // We must prevent the queue does not get full while offline
-    if (!_mqtt.connected()) return -1;
+    if (_mqtt.connected()) {
+        if (_mqtt_json_payload_count >= MQTT_QUEUE_MAX_SIZE) {
+            mqttFlush();
+        }
 
-    // Force flusing the queue if the MQTT_QUEUE_MAX_SIZE has been reached
-    if (_mqtt_queue.size() >= MQTT_QUEUE_MAX_SIZE) mqttFlush();
+        _mqtt_json_payload.remove_if([topic](const MqttPayload& payload) {
+            return payload.topic() == topic;
+        });
 
-    int8_t index = _mqtt_queue.size();
-
-    // Enqueue new message
-    mqtt_message_t element;
-    element.parent = parent;
-    element.topic = strdup(topic);
-    if (NULL != message) {
-        element.message = strdup(message);
+        _mqtt_json_payload.emplace_front(topic, message);
+        ++_mqtt_json_payload_count;
     }
-    _mqtt_queue.push_back(element);
-
-    return index;
-
-}
-
-int8_t mqttEnqueue(const char * topic, const char * message) {
-    return mqttEnqueue(topic, message, mqtt_message_t::END);
 }
 
 // -----------------------------------------------------------------------------
 
-void mqttSubscribeRaw(const char * topic) {
+// Only async client returns resulting PID, sync libraries return either success (1) or failure (0)
+
+uint16_t mqttSubscribeRaw(const char* topic, int qos) {
+    uint16_t pid { 0u };
     if (_mqtt.connected() && (strlen(topic) > 0)) {
-        #if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
-            unsigned int packetId = _mqtt.subscribe(topic, _mqtt_qos);
-            DEBUG_MSG_P(PSTR("[MQTT] Subscribing to %s (PID %d)\n"), topic, packetId);
-        #else // Arduino-MQTT or PubSubClient
-            _mqtt.subscribe(topic, _mqtt_qos);
-            DEBUG_MSG_P(PSTR("[MQTT] Subscribing to %s\n"), topic);
-        #endif
+        pid = _mqtt.subscribe(topic, qos);
+        DEBUG_MSG_P(PSTR("[MQTT] Subscribing to %s (PID %d)\n"), topic, pid);
     }
+
+    return pid;
 }
 
-void mqttSubscribe(const char * topic) {
-    mqttSubscribeRaw(mqttTopic(topic, true).c_str());
+uint16_t mqttSubscribeRaw(const char* topic) {
+    return mqttSubscribeRaw(topic, _mqtt_qos);
 }
 
-void mqttUnsubscribeRaw(const char * topic) {
+bool mqttSubscribe(const char * topic) {
+    return mqttSubscribeRaw(mqttTopic(topic, true).c_str(), _mqtt_qos);
+}
+
+uint16_t mqttUnsubscribeRaw(const char * topic) {
+    uint16_t pid { 0u };
     if (_mqtt.connected() && (strlen(topic) > 0)) {
-        #if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
-            unsigned int packetId = _mqtt.unsubscribe(topic);
-            DEBUG_MSG_P(PSTR("[MQTT] Unsubscribing to %s (PID %d)\n"), topic, packetId);
-        #else // Arduino-MQTT or PubSubClient
-            _mqtt.unsubscribe(topic);
-            DEBUG_MSG_P(PSTR("[MQTT] Unsubscribing to %s\n"), topic);
-        #endif
+        pid = _mqtt.unsubscribe(topic);
+        DEBUG_MSG_P(PSTR("[MQTT] Unsubscribing from %s (PID %d)\n"), topic, pid);
     }
+
+    return pid;
 }
 
-void mqttUnsubscribe(const char * topic) {
-    mqttUnsubscribeRaw(mqttTopic(topic, true).c_str());
+bool mqttUnsubscribe(const char * topic) {
+    return mqttUnsubscribeRaw(mqttTopic(topic, true).c_str());
 }
 
 // -----------------------------------------------------------------------------
@@ -935,9 +1072,38 @@ bool mqttForward() {
     return _mqtt_forward;
 }
 
+/**
+    Register a persistent lifecycle callback
+
+    @param standalone function pointer
+*/
 void mqttRegister(mqtt_callback_f callback) {
-    _mqtt_callbacks.push_back(callback);
+    _mqtt_callbacks.push_front(callback);
 }
+
+#if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
+
+/**
+    Register a temporary publish callback
+
+    @param callable object
+*/
+void mqttOnPublish(uint16_t pid, mqtt_pid_callback_f callback) {
+    auto callable = MqttPidCallback { pid, callback };
+    _mqtt_publish_callbacks.push_front(std::move(callable));
+}
+
+/**
+    Register a temporary subscribe callback
+
+    @param callable object
+*/
+void mqttOnSubscribe(uint16_t pid, mqtt_pid_callback_f callback) {
+    auto callable = MqttPidCallback { pid, callback };
+    _mqtt_subscribe_callbacks.push_front(std::move(callable));
+}
+
+#endif
 
 void mqttSetBroker(IPAddress ip, uint16_t port) {
     setSetting("mqttServer", ip.toString());
@@ -954,6 +1120,8 @@ void mqttSetBrokerIfNone(IPAddress ip, uint16_t port) {
         mqttSetBroker(ip, port);
     }
 }
+
+// TODO: these strings are only updated after running the configuration routine and when MQTT is *enabled*
 
 const String& mqttPayloadOnline() {
     return _mqtt_payload_online;
@@ -976,12 +1144,11 @@ void mqttSendStatus() {
 // -----------------------------------------------------------------------------
 
 void _mqttConnect() {
-
-    // Do not connect if disabled
-    if (!_mqtt_enabled) return;
-
     // Do not connect if already connected or still trying to connect
     if (_mqtt.connected() || (_mqtt_state != AsyncClientState::Disconnected)) return;
+
+    // Do not connect if disabled or no WiFi
+    if (!_mqtt_enabled || (!wifiConnected())) return;
 
     // Check reconnect interval
     if (millis() - _mqtt_last_connection < _mqtt_reconnect_delay) return;
@@ -992,19 +1159,17 @@ void _mqttConnect() {
         _mqtt_reconnect_delay = MQTT_RECONNECT_DELAY_MAX;
     }
 
-    #if MDNS_CLIENT_SUPPORT
-        _mqtt_server = mdnsResolve(_mqtt_server);
-    #endif
-
-    DEBUG_MSG_P(PSTR("[MQTT] Connecting to broker at %s:%u\n"), _mqtt_server.c_str(), _mqtt_port);
+    DEBUG_MSG_P(PSTR("[MQTT] Connecting to broker at %s:%hu\n"), _mqtt_server.c_str(), _mqtt_port);
 
     DEBUG_MSG_P(PSTR("[MQTT] Client ID: %s\n"), _mqtt_clientid.c_str());
     DEBUG_MSG_P(PSTR("[MQTT] QoS: %d\n"), _mqtt_qos);
-    DEBUG_MSG_P(PSTR("[MQTT] Retain flag: %d\n"), _mqtt_retain ? 1 : 0);
-    DEBUG_MSG_P(PSTR("[MQTT] Keepalive time: %ds\n"), _mqtt_keepalive);
+    DEBUG_MSG_P(PSTR("[MQTT] Retain flag: %c\n"), _mqtt_retain ? 'Y' : 'N');
+    DEBUG_MSG_P(PSTR("[MQTT] Keepalive time: %hu (s)\n"), _mqtt_keepalive);
     DEBUG_MSG_P(PSTR("[MQTT] Will topic: %s\n"), _mqtt_will.c_str());
 
     _mqtt_state = AsyncClientState::Connecting;
+
+    _mqtt_skip_messages = (_mqtt_skip_time > 0);
 
     #if SECURE_CLIENT != SECURE_CLIENT_NONE
         const bool secure = getSetting("mqttUseSSL", 1 == MQTT_SSL_ENABLED);
@@ -1028,31 +1193,23 @@ void _mqttConnect() {
 }
 
 void mqttLoop() {
-
-    if (WiFi.status() != WL_CONNECTED) return;
-
-    #if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
-
-        _mqttConnect();
-
-    #else // MQTT_LIBRARY != MQTT_LIBRARY_ASYNCMQTTCLIENT
-
-        if (_mqtt.connected()) {
-
-            _mqtt.loop();
-
-        } else {
-
-            if (_mqtt_state != AsyncClientState::Disconnected) {
-                _mqttOnDisconnect();
-            }
-
-            _mqttConnect();
-
+#if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
+    _mqttConnect();
+#else
+    if (_mqtt.connected()) {
+        _mqtt.loop();
+    } else {
+        if (_mqtt_state != AsyncClientState::Disconnected) {
+            _mqttOnDisconnect();
         }
 
-    #endif // MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
+        _mqttConnect();
+    }
+#endif
+}
 
+void mqttHeartbeat(heartbeat::Callback callback) {
+    _mqtt_heartbeat_callbacks.push_front(callback);
 }
 
 void mqttSetup() {
@@ -1081,15 +1238,15 @@ void mqttSetup() {
             _mqttOnConnect();
         });
 
-        _mqtt.onSubscribe([](uint16_t packetId, uint8_t qos) {
-            DEBUG_MSG_P(PSTR("[MQTT] Subscribe ACK for PID %u\n"), packetId);
+        _mqtt.onSubscribe([](uint16_t pid, int) {
+            _mqttPidCallback(_mqtt_subscribe_callbacks, pid);
         });
-        _mqtt.onPublish([](uint16_t packetId) {
-            DEBUG_MSG_P(PSTR("[MQTT] Publish ACK for PID %u\n"), packetId);
+
+        _mqtt.onPublish([](uint16_t pid) {
+            _mqttPidCallback(_mqtt_publish_callbacks, pid);
         });
 
         _mqtt.onDisconnect([](AsyncMqttClientDisconnectReason reason) {
-
             switch (reason) {
                 case AsyncMqttClientDisconnectReason::TCP_DISCONNECTED:
                     DEBUG_MSG_P(PSTR("[MQTT] TCP Disconnected\n"));
@@ -1136,7 +1293,7 @@ void mqttSetup() {
 
     #elif MQTT_LIBRARY == MQTT_LIBRARY_ARDUINOMQTT
 
-        _mqtt.onMessageAdvanced([](MQTTClient *client, char topic[], char payload[], int length) {
+        _mqtt.onMessageAdvanced([](MQTTClient* , char topic[], char payload[], int length) {
             _mqttOnMessage(topic, payload, length);
         });
 

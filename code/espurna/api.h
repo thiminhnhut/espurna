@@ -3,90 +3,39 @@
 API MODULE
 
 Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
+Copyright (C) 2020-2021 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 
 */
 
 #pragma once
 
 #include "espurna.h"
+
+#include "api_impl.h"
 #include "web.h"
 
-#if WEB_SUPPORT
+#include <functional>
 
+#if WEB_SUPPORT
+bool apiAuthenticateHeader(AsyncWebServerRequest*, const String& key);
+bool apiAuthenticateParam(AsyncWebServerRequest*, const String& key);
 bool apiAuthenticate(AsyncWebServerRequest*);
+#endif
+
+void apiCommonSetup();
 bool apiEnabled();
 bool apiRestFul();
 String apiKey();
 
-#endif // WEB_SUPPORT == 1
+#if WEB_SUPPORT
+using ApiBasicHandler = std::function<bool(ApiRequest&)>;
+using ApiJsonHandler = std::function<bool(ApiRequest&, JsonObject& reponse)>;
 
-#if WEB_SUPPORT && API_SUPPORT
+void apiRegister(const String& path, ApiBasicHandler&& get, ApiBasicHandler&& put);
+void apiRegister(const String& path, ApiJsonHandler&& get, ApiJsonHandler&& put);
+#endif
 
-#include <vector>
-
-constexpr unsigned char ApiUnusedArg = 0u;
-
-struct ApiBuffer {
-    constexpr static size_t size = API_BUFFER_SIZE;
-    char data[size];
-
-    void erase() {
-        std::fill(data, data + size, '\0');
-    }
-};
-
-struct Api {
-    using BasicHandler = void(*)(const Api& api, ApiBuffer& buffer);
-    using JsonHandler = void(*)(const Api& api, JsonObject& root);
-
-    enum class Type {
-        Basic,
-        Json
-    };
-
-    Api() = delete;
-
-    Api(const String& path_, Type type_, unsigned char arg_, BasicHandler get_, BasicHandler put_ = nullptr) :
-        path(path_),
-        type(type_),
-        arg(arg_)
-    {
-        get.basic = get_;
-        put.basic = put_;
-    }
-
-    Api(const String& path_, Type type_, unsigned char arg_, JsonHandler get_, JsonHandler put_ = nullptr) :
-        path(path_),
-        type(type_),
-        arg(arg_)
-    {
-        get.json = get_;
-        put.json = put_;
-    }
-
-    String path;
-    Type type;
-    unsigned char arg;
-
-    union {
-        BasicHandler basic;
-        JsonHandler json;
-    } get;
-
-    union {
-        BasicHandler basic;
-        JsonHandler json;
-    } put;
-};
-
-void apiRegister(const Api& api);
-
-void apiCommonSetup();
 void apiSetup();
 
-void apiReserve(size_t);
-
-void apiError(const Api&, ApiBuffer& buffer);
-void apiOk(const Api&, ApiBuffer& buffer);
-
-#endif // API_SUPPORT == 1
+bool apiError(ApiRequest&);
+bool apiOk(ApiRequest&);

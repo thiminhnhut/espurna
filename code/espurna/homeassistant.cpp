@@ -2,35 +2,209 @@
 
 HOME ASSISTANT MODULE
 
+Original module
 Copyright (C) 2017-2019 by Xose Pérez <xose dot perez at gmail dot com>
+
+Reworked queueing and RAM usage reduction
+Copyright (C) 2019-2021 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 
 */
 
-#include "homeassistant.h"
+#include "espurna.h"
 
 #if HOMEASSISTANT_SUPPORT
-
-#include <Ticker.h>
-#include <Schedule.h>
 
 #include "light.h"
 #include "mqtt.h"
 #include "relay.h"
-#include "rpc.h"
 #include "sensor.h"
-#include "utils.h"
 #include "ws.h"
 
-bool _ha_enabled = false;
-bool _ha_send_flag = false;
+#include <ArduinoJson.h>
 
-// -----------------------------------------------------------------------------
-// UTILS
-// -----------------------------------------------------------------------------
+#include <forward_list>
+#include <memory>
 
-// per yaml 1.1 spec, following scalars are converted to bool. we want the string, so quoting the output
-// y|Y|yes|Yes|YES|n|N|no|No|NO |true|True|TRUE|false|False|FALSE |on|On|ON|off|Off|OFF
-String _haFixPayload(const String& value) {
+namespace homeassistant {
+
+// Output is supposed to be used as both part of the MQTT config topic and the `uniq_id` field
+// TODO: manage UTF8 strings? in case we somehow receive `desc`, like it was done originally
+
+String normalize_ascii(String&& value, bool lower = false) {
+    auto* ptr = const_cast<char*>(value.c_str());
+    for (;;) {
+        switch (*ptr) {
+        case '\0':
+            goto return_value;
+        case '0' ... '9':
+        case 'a' ... 'z':
+            break;
+        case 'A' ... 'Z':
+            if (lower) {
+                *ptr += 32;
+            }
+            break;
+        default:
+            *ptr = '_';
+            break;
+        }
+        ++ptr;
+    }
+
+return_value:
+    return std::move(value);
+}
+
+// Common data used across the discovery payloads.
+// ref. https://developers.home-assistant.io/docs/entity_registry_index/
+
+class Device {
+public:
+    struct Strings {
+        Strings() = delete;
+        Strings(const Strings&) = delete;
+
+        Strings(Strings&&) = default;
+        Strings(String&& prefix_, String&& name_, const String& identifier_, const char* version_, const char* manufacturer_, const char* device_) :
+            prefix(std::move(prefix_)),
+            name(std::move(name_)),
+            identifier(identifier_),
+            version(version_),
+            manufacturer(manufacturer_),
+            device(device_)
+        {
+            name = normalize_ascii(std::move(name));
+            identifier = normalize_ascii(std::move(identifier), true);
+        }
+
+        String prefix;
+        String name;
+        String identifier;
+        const char* version;
+        const char* manufacturer;
+        const char* device;
+    };
+
+    using StringsPtr = std::unique_ptr<Strings>;
+
+    static constexpr size_t BufferSize { JSON_ARRAY_SIZE(1) + JSON_OBJECT_SIZE(1) + JSON_OBJECT_SIZE(5) };
+
+    using Buffer = StaticJsonBuffer<BufferSize>;
+    using BufferPtr = std::unique_ptr<Buffer>;
+
+    Device() = delete;
+    Device(const Device&) = delete;
+
+    Device(Device&&) = default;
+    Device(String&& prefix, String&& name, const String& identifier, const char* version, const char* manufacturer, const char* device) :
+        _strings(std::make_unique<Strings>(std::move(prefix), std::move(name), identifier, version, manufacturer, device)),
+        _buffer(std::make_unique<Buffer>()),
+        _root(_buffer->createObject())
+    {
+        JsonArray& ids = _root.createNestedArray("ids");
+        ids.add(_strings->identifier.c_str());
+
+        _root["name"] = _strings->name.c_str();
+        _root["sw"] = _strings->version;
+        _root["mf"] = _strings->manufacturer;
+        _root["mdl"] = _strings->device;
+    }
+
+    const String& name() const {
+        return _strings->name;
+    }
+
+    const String& prefix() const {
+        return _strings->prefix;
+    }
+
+    const String& identifier() const {
+        return _strings->identifier;
+    }
+
+    JsonObject& root() {
+        return _root;
+    }
+
+private:
+    StringsPtr _strings;
+    BufferPtr _buffer;
+    JsonObject& _root;
+};
+
+using DevicePtr = std::unique_ptr<Device>;
+using JsonBufferPtr = std::unique_ptr<DynamicJsonBuffer>;
+
+class Context {
+public:
+    Context() = delete;
+    Context(DevicePtr&& device, size_t capacity) :
+        _device(std::move(device)),
+        _capacity(capacity)
+    {}
+
+    const String& name() const {
+        return _device->name();
+    }
+
+    const String& prefix() const {
+        return _device->prefix();
+    }
+
+    const String& identifier() const {
+        return _device->identifier();
+    }
+
+    JsonObject& device() {
+        return _device->root();
+    }
+
+    void reset() {
+        _json = std::make_unique<DynamicJsonBuffer>(_capacity);
+    }
+
+    size_t capacity() const {
+        return _capacity;
+    }
+
+    size_t size() {
+        if (_json) {
+            return _json->size();
+        }
+
+        return 0;
+    }
+
+    JsonObject& makeObject() {
+        if (!_json) {
+            reset();
+        }
+
+        return _json->createObject();
+    }
+
+private:
+    String _prefix;
+    DevicePtr _device;
+
+    JsonBufferPtr _json { nullptr };
+    size_t _capacity { 0ul };
+};
+
+Context makeContext() {
+    auto device = std::make_unique<Device>(
+        getSetting("haPrefix", HOMEASSISTANT_PREFIX),
+        getSetting("hostname", getIdentifier()),
+        getIdentifier(),
+        getVersion(),
+        getManufacturer(),
+        getDevice()
+    );
+
+    return Context(std::move(device), 2048ul);
+}
+
+String quote(String&& value) {
     if (value.equalsIgnoreCase("y")
         || value.equalsIgnoreCase("n")
         || value.equalsIgnoreCase("yes")
@@ -40,536 +214,777 @@ String _haFixPayload(const String& value) {
         || value.equalsIgnoreCase("on")
         || value.equalsIgnoreCase("off")
     ) {
-        String temp;
-        temp.reserve(value.length() + 2);
-        temp = "\"";
-        temp += value;
-        temp += "\"";
-        return temp;
+        String result;
+        result.reserve(value.length() + 2);
+        result += '"';
+        result += value;
+        result += '"';
+        return result;
     }
-    return value;
+
+    return std::move(value);
 }
 
-String& _haFixName(String& name) {
-    for (unsigned char i=0; i<name.length(); i++) {
-        if (!isalnum(name.charAt(i))) name.setCharAt(i, '_');
+// - Discovery object is expected to accept Context reference as input
+//   (and all implementations do just that)
+// - topic() & message() return refs, since those *may* be called multiple times before advancing to the next 'entity'
+// - We use short-hand names right away, since we don't expect this to be used to generate yaml
+// - In case the object uses the JSON makeObject() as state, make sure we don't use it (state)
+//   and the object itself after next() or ok() return false
+// - Make sure JSON state is not created on construction, but lazy-loaded as soon as it is needed.
+//   Meaning, we don't cause invalid refs immediatly when there are more than 1 discovery object present and we reset the storage.
+
+class Discovery {
+public:
+    virtual ~Discovery() {
     }
-    return name;
+
+    virtual bool ok() const = 0;
+    virtual const String& topic() = 0;
+    virtual const String& message() = 0;
+    virtual bool next() = 0;
+};
+
+#if RELAY_SUPPORT
+
+struct RelayContext {
+    String availability;
+    String payload_available;
+    String payload_not_available;
+    String payload_on;
+    String payload_off;
+};
+
+RelayContext makeRelayContext() {
+    return {
+        mqttTopic(MQTT_TOPIC_STATUS, false),
+        quote(mqttPayloadStatus(true)),
+        quote(mqttPayloadStatus(false)),
+        quote(relayPayload(PayloadStatus::On)),
+        quote(relayPayload(PayloadStatus::Off))
+    };
 }
 
-#if (LIGHT_PROVIDER != LIGHT_PROVIDER_NONE) || (defined(ITEAD_SLAMPHER))
-const String switchType("light");
-#else
-const String switchType("switch");
+class RelayDiscovery : public Discovery {
+public:
+    RelayDiscovery() = delete;
+    explicit RelayDiscovery(Context& ctx) :
+        _ctx(ctx),
+        _relay(makeRelayContext()),
+        _relays(relayCount())
+    {}
+
+    JsonObject& root() {
+        if (!_root) {
+            _root = &_ctx.makeObject();
+        }
+
+        return *_root;
+    }
+
+    bool ok() const override {
+        return (_relays) && (_index < _relays);
+    }
+
+    const String& uniqueId() {
+        if (!_unique_id.length()) {
+            _unique_id = _ctx.identifier() + '_' + F("relay") + '_' + _index;
+        }
+        return _unique_id;
+    }
+
+    const String& topic() override {
+        if (!_topic.length()) {
+            _topic = _ctx.prefix();
+            _topic += F("/switch/");
+            _topic += uniqueId();
+            _topic += F("/config");
+        }
+        return _topic;
+    }
+
+    const String& message() override {
+        if (!_message.length()) {
+            auto& json = root();
+            json["dev"] = _ctx.device();
+            json["avty_t"] = _relay.availability.c_str();
+            json["pl_avail"] = _relay.payload_available.c_str();
+            json["pl_not_avail"] = _relay.payload_not_available.c_str();
+            json["pl_on"] = _relay.payload_on.c_str();
+            json["pl_off"] = _relay.payload_off.c_str();
+            json["uniq_id"] = uniqueId();
+            json["name"] = _ctx.name() + ' ' + _index;
+            json["stat_t"] = mqttTopic(MQTT_TOPIC_RELAY, _index, false);
+            json["cmd_t"] = mqttTopic(MQTT_TOPIC_RELAY, _index, true);
+            json.printTo(_message);
+        }
+        return _message;
+    }
+
+    bool next() override {
+        if (_index < _relays) {
+            auto current = _index;
+            ++_index;
+            if ((_index > current) && (_index < _relays)) {
+                _unique_id = "";
+                _topic = "";
+                _message = "";
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+private:
+    Context& _ctx;
+    JsonObject* _root { nullptr };
+
+    RelayContext _relay;
+    unsigned char _index { 0u };
+    unsigned char _relays { 0u };
+
+    String _unique_id;
+    String _topic;
+    String _message;
+};
+
 #endif
 
-// -----------------------------------------------------------------------------
-// Shared context object to store entity and entity registry data
-// -----------------------------------------------------------------------------
+// Example payload:
+// {
+//  "brightness": 255,
+//  "color_temp": 155,
+//  "color": {
+//    "r": 255,
+//    "g": 180,
+//    "b": 200,
+//    "x": 0.406,
+//    "y": 0.301,
+//    "h": 344.0,
+//    "s": 29.412
+//  },
+//  "effect": "colorloop",
+//  "state": "ON",
+//  "transition": 2,
+//  "white_value": 150
+// }
 
-struct ha_config_t {
+// Notice that we only support JSON schema payloads, leaving it to the user to configure special
+// per-channel topics, as those don't really fit into the HASS idea of lights controls for a single device
 
-    static const size_t DEFAULT_BUFFER_SIZE = 2048;
+#if LIGHT_PROVIDER != LIGHT_PROVIDER_NONE
 
-    ha_config_t(size_t size) :
-        jsonBuffer(size),
-        deviceConfig(jsonBuffer.createObject()),
-        root(jsonBuffer.createObject()),
-        identifier(getIdentifier()),
-        name(getSetting("desc", getSetting("hostname"))),
-        version(String(APP_NAME " " APP_VERSION " (") + getCoreVersion() + ")")
-    {
-        deviceConfig.createNestedArray("identifiers").add(identifier.c_str());
-        deviceConfig["name"] = name.c_str();
-        deviceConfig["sw_version"] = version.c_str();
-        deviceConfig["manufacturer"] = getDevice().c_str();
-        deviceConfig["model"] = getManufacturer().c_str();
+class LightDiscovery : public Discovery {
+public:
+    explicit LightDiscovery(Context& ctx) :
+        _ctx(ctx)
+    {}
+
+    JsonObject& root() {
+        if (!_root) {
+            _root = &_ctx.makeObject();
+        }
+
+        return *_root;
     }
 
-    ha_config_t() : ha_config_t(DEFAULT_BUFFER_SIZE) {}
+    bool ok() const override {
+        return true;
+    }
 
-    size_t size() { return jsonBuffer.size(); }
+    bool next() override {
+        return false;
+    }
 
-    DynamicJsonBuffer jsonBuffer;
-    JsonObject& deviceConfig;
-    JsonObject& root;
+    const String& uniqueId() {
+        if (!_unique_id.length()) {
+            _unique_id = _ctx.identifier() + '_' + F("light");
+        }
 
-    const String identifier;
-    const String name;
-    const String version;
+        return _unique_id;
+    }
+
+    const String& topic() override {
+        if (!_topic.length()) {
+            _topic = _ctx.prefix();
+            _topic += F("/light/");
+            _topic += uniqueId();
+            _topic += F("/config");
+        }
+
+        return _topic;
+    }
+
+    const String& message() override {
+        if (!_message.length()) {
+            auto& json = root();
+
+            json["schema"] = "json";
+            json["uniq_id"] = uniqueId();
+
+            json["name"] = _ctx.name() + ' ' + F("Light");
+
+            json["stat_t"] = mqttTopic(MQTT_TOPIC_LIGHT_JSON, false);
+            json["cmd_t"] = mqttTopic(MQTT_TOPIC_LIGHT_JSON, true);
+
+            json["avty_t"] = mqttTopic(MQTT_TOPIC_STATUS, false);
+            json["pl_avail"] = quote(mqttPayloadStatus(true));
+            json["pl_not_avail"] = quote(mqttPayloadStatus(false));
+
+            // send `true` for every payload we support sending / receiving
+            // already enabled by default: "state", "transition"
+
+            json["brightness"] = true;
+
+            // Note that since we send back the values immediately, HS mode sliders
+            // *will jump*, as calculations of input do not always match the output.
+            // (especially, when gamma table is used, as we modify the results)
+            // In case or RGB, channel values input is expected to match the output exactly.
+
+            if (lightHasColor()) {
+                if (lightUseRGB()) {
+                    json["rgb"] = true;
+                } else {
+                    json["hs"] = true;
+                }
+            }
+
+            // Mired is only an input, we never send this value back
+            // (...besides the internally pinned value, ref. MQTT_TOPIC_MIRED. not used here though)
+            // - in RGB mode, we convert the temperature into a specific color
+            // - in CCT mode, white channels are used
+
+            if (lightHasColor() || lightUseCCT()) {
+                auto range = lightMiredsRange();
+                json["min_mirs"] = range.cold();
+                json["max_mirs"] = range.warm();
+                json["color_temp"] = true;
+            }
+
+            json.printTo(_message);
+        }
+
+        return _message;
+    }
+
+private:
+    Context& _ctx;
+    JsonObject* _root { nullptr };
+
+    String _unique_id;
+    String _topic;
+    String _message;
 };
 
-// -----------------------------------------------------------------------------
-// MQTT discovery
-// -----------------------------------------------------------------------------
+bool heartbeat(heartbeat::Mask mask) {
+    // TODO: mask json payload specifically?
+    // or, find a way to detach masking from the system setting / don't use heartbeat timer
+    if (mask & heartbeat::Report::Light) {
+        DynamicJsonBuffer buffer(512);
+        JsonObject& root = buffer.createObject();
 
-struct ha_discovery_t {
+        auto state = lightState();
+        root["state"] = state ? "ON" : "OFF";
 
-    constexpr static const unsigned long SEND_TIMEOUT = 1000;
-    constexpr static const unsigned char SEND_RETRY = 5;
+        if (state) {
+            root["brightness"] = lightBrightness();
 
-    ha_discovery_t() :
-        _retry(SEND_RETRY)
-    {
-        #if SENSOR_SUPPORT
-            _messages.reserve(magnitudeCount() + relayCount());
-        #else
-            _messages.reserve(relayCount());
-        #endif
+            if (lightUseCCT()) {
+                root["white_value"] = lightColdWhite();
+            }
+
+            if (lightColor()) {
+                auto& color = root.createNestedObject("color");
+                if (lightUseRGB()) {
+                    auto rgb = lightRgb();
+                    color["r"] = rgb.red();
+                    color["g"] = rgb.green();
+                    color["b"] = rgb.blue();
+                } else {
+                    auto hsv = lightHsv();
+                    color["h"] = hsv.hue();
+                    color["s"] = hsv.saturation();
+                }
+            }
+        }
+
+        String message;
+        root.printTo(message);
+
+        String topic = mqttTopic(MQTT_TOPIC_LIGHT_JSON, false);
+        mqttSendRaw(topic.c_str(), message.c_str(), false);
     }
 
-    ~ha_discovery_t() {
-        DEBUG_MSG_P(PSTR("[HA] Discovery %s\n"), empty() ? "OK" : "FAILED");
-    }
+    return true;
+}
 
-    // TODO: is this expected behaviour?
-    void add(String& topic, String& message) {
-        _messages.emplace_back(std::move(topic), std::move(message));
-    }
+void publishLightJson() {
+    heartbeat(static_cast<heartbeat::Mask>(heartbeat::Report::Light));
+}
 
-    // We don't particulary care about the order since names have indexes?
-    // If we ever do, use iterators to reference elems and pop the String contents instead
-    mqtt_msg_t& next() {
-        return _messages.back();
-    }
-
-    void pop() {
-        _messages.pop_back();
-    }
-
-    const bool empty() const {
-        return !_messages.size();
-    }
-
-    bool retry() {
-        if (!_retry) return false;
-        return --_retry;
-    }
-
-    void prepareSwitches(ha_config_t& config);
-    #if SENSOR_SUPPORT
-        void prepareMagnitudes(ha_config_t& config);
-    #endif
-
-    Ticker timer;
-    std::vector<mqtt_msg_t> _messages;
-    unsigned char _retry;
-
-};
-
-std::unique_ptr<ha_discovery_t> _ha_discovery = nullptr;
-
-void _haSendDiscovery() {
-
-    if (!_ha_discovery) return;
-
-    const bool connected = mqttConnected();
-    const bool retry = _ha_discovery->retry();
-    const bool empty = _ha_discovery->empty();
-
-    if (!connected || !retry || empty) {
-        _ha_discovery = nullptr;
+void receiveLightJson(char* payload) {
+    DynamicJsonBuffer buffer(1024);
+    JsonObject& root = buffer.parseObject(payload);
+    if (!root.success()) {
         return;
     }
 
-    const unsigned long ts = millis();
-    do {
-        if (_ha_discovery->empty()) break;
+    if (!root.containsKey("state")) {
+        return;
+    }
 
-        auto& message = _ha_discovery->next();
-        if (!mqttSendRaw(message.first.c_str(), message.second.c_str())) {
-            break;
-        }
-        _ha_discovery->pop();
-    // XXX: should not reach this timeout, most common case is the break above
-    } while (millis() - ts < ha_discovery_t::SEND_TIMEOUT);
-
-    mqttSendStatus();
-
-    if (_ha_discovery->empty()) {
-        _ha_discovery = nullptr;
+    auto state = root["state"].as<String>();
+    if (state == F("ON")) {
+        lightState(true);
+    } else if (state == F("OFF")) {
+        lightState(false);
     } else {
-        // 2.3.0: Ticker callback arguments are not preserved and once_ms_scheduled is missing
-        // We need to use global discovery object to reschedule it
-        // Otherwise, this would've been shared_ptr from _haSend
-        _ha_discovery->timer.once_ms(ha_discovery_t::SEND_TIMEOUT, []() {
-            schedule_function(_haSendDiscovery);
-        });
+        return;
     }
 
-}
-
-// -----------------------------------------------------------------------------
-// SENSORS
-// -----------------------------------------------------------------------------
-
-#if SENSOR_SUPPORT
-
-void _haSendMagnitude(unsigned char index, JsonObject& config) {
-    config["name"] = _haFixName(getSetting("hostname") + String(" ") + magnitudeTopic(magnitudeType(index)));
-    config["state_topic"] = mqttTopic(magnitudeTopicIndex(index).c_str(), false);
-    config["unit_of_measurement"] = magnitudeUnits(index);
-}
-
-void ha_discovery_t::prepareMagnitudes(ha_config_t& config) {
-
-    // Note: because none of the keys are erased, use a separate object to avoid accidentally sending switch data
-    JsonObject& root = config.jsonBuffer.createObject();
-
-    for (unsigned char i=0; i<magnitudeCount(); i++) {
-
-        String topic = getSetting("haPrefix", HOMEASSISTANT_PREFIX) +
-            "/sensor/" +
-            getSetting("hostname") + "_" + String(i) +
-            "/config";
-        String message;
-
-        if (_ha_enabled) {
-            _haSendMagnitude(i, root);
-            root["uniq_id"] = getIdentifier() + "_" + magnitudeTopic(magnitudeType(i)) + "_" + String(i);
-            root["device"] = config.deviceConfig;
-            
-            message.reserve(root.measureLength());
-            root.printTo(message);
+    unsigned long transition { lightTransitionTime() };
+    if (root.containsKey("transition")) {
+        auto seconds = root["transition"].as<float>();
+        if (seconds > 0) {
+            transition = static_cast<unsigned long>(seconds * 1000.0);
         }
-
-        add(topic, message);
-
     }
 
-}
-
-#endif // SENSOR_SUPPORT
-
-// -----------------------------------------------------------------------------
-// SWITCHES & LIGHTS
-// -----------------------------------------------------------------------------
-
-void _haSendSwitch(unsigned char i, JsonObject& config) {
-
-    String name = getSetting("hostname");
-    if (relayCount() > 1) {
-        name += String("_") + String(i);
+    if (root.containsKey("color_temp")) {
+        lightMireds(root["color_temp"].as<long>());
     }
 
-    config.set("name", _haFixName(name));
-
-    if (relayCount()) {
-        config["state_topic"] = mqttTopic(MQTT_TOPIC_RELAY, i, false);
-        config["command_topic"] = mqttTopic(MQTT_TOPIC_RELAY, i, true);
-        config["payload_on"] = relayPayload(PayloadStatus::On);
-        config["payload_off"] = relayPayload(PayloadStatus::Off);
-        config["availability_topic"] = mqttTopic(MQTT_TOPIC_STATUS, false);
-        config["payload_available"] = mqttPayloadStatus(true);
-        config["payload_not_available"] = mqttPayloadStatus(false);
+    if (root.containsKey("brightness")) {
+        lightBrightness(root["brightness"].as<long>());
     }
 
-    #if LIGHT_PROVIDER != LIGHT_PROVIDER_NONE
-
-        if (i == 0) {
-
-            config["brightness_state_topic"] = mqttTopic(MQTT_TOPIC_BRIGHTNESS, false);
-            config["brightness_command_topic"] = mqttTopic(MQTT_TOPIC_BRIGHTNESS, true);
-
-            if (lightHasColor()) {
-                config["rgb_state_topic"] = mqttTopic(MQTT_TOPIC_COLOR_RGB, false);
-                config["rgb_command_topic"] = mqttTopic(MQTT_TOPIC_COLOR_RGB, true);
-            }
-            if (lightHasColor() || lightUseCCT()) {
-                config["color_temp_command_topic"] = mqttTopic(MQTT_TOPIC_MIRED, true);
-                config["color_temp_state_topic"] = mqttTopic(MQTT_TOPIC_MIRED, false);
-            }
-
-            if (lightChannels() > 3) {
-                config["white_value_state_topic"] = mqttTopic(MQTT_TOPIC_CHANNEL, 3, false);
-                config["white_value_command_topic"] = mqttTopic(MQTT_TOPIC_CHANNEL, 3, true);
-            }
-
-        }
-
-    #endif // LIGHT_PROVIDER != LIGHT_PROVIDER_NONE
-
-}
-
-void ha_discovery_t::prepareSwitches(ha_config_t& config) {
-
-    // Note: because none of the keys are erased, use a separate object to avoid accidentally sending magnitude data
-    JsonObject& root = config.jsonBuffer.createObject();
-
-    for (unsigned char i=0; i<relayCount(); i++) {
-
-        String topic = getSetting("haPrefix", HOMEASSISTANT_PREFIX) +
-            "/" + switchType +
-            "/" + getSetting("hostname") + "_" + String(i) +
-            "/config";
-        String message;
-
-        if (_ha_enabled) {
-            _haSendSwitch(i, root);
-            root["uniq_id"] = getIdentifier() + "_" + switchType + "_" + String(i);
-            root["device"] = config.deviceConfig;
-
-            message.reserve(root.measureLength());
-            root.printTo(message);
-        }
-
-        add(topic, message);
-    }
-
-}
-
-// -----------------------------------------------------------------------------
-
-constexpr const size_t HA_YAML_BUFFER_SIZE = 1024;
-
-void _haSwitchYaml(unsigned char index, JsonObject& root) {
-
-    String output;
-    output.reserve(HA_YAML_BUFFER_SIZE);
-
-    JsonObject& config = root.createNestedObject("config");
-    config["platform"] = "mqtt";
-    _haSendSwitch(index, config);
-
-    if (index == 0) output += "\n\n" + switchType + ":";
-    output += "\n";
-    bool first = true;
-
-    for (auto kv : config) {
-        if (first) {
-            output += "  - ";
-            first = false;
+    if (lightHasColor() && root.containsKey("color")) {
+        JsonObject& color = root["color"];
+        if (lightUseRGB()) {
+            lightRgb({
+                color["r"].as<long>(),
+                color["g"].as<long>(),
+                color["b"].as<long>()});
         } else {
-            output += "    ";
+            lightHs(
+                color["h"].as<long>(),
+                color["s"].as<long>());
         }
-        output += kv.key;
-        output += ": ";
-        if (strncmp(kv.key, "payload_", strlen("payload_")) == 0) {
-            output += _haFixPayload(kv.value.as<String>());
-        } else {
-            output += kv.value.as<String>();
-        }
-        output += "\n";
     }
-    output += " ";
 
-    root.remove("config");
-    root["haConfig"] = output;
-}
-
-#if SENSOR_SUPPORT
-
-void _haSensorYaml(unsigned char index, JsonObject& root) {
-
-    String output;
-    output.reserve(HA_YAML_BUFFER_SIZE);
-
-    JsonObject& config = root.createNestedObject("config");
-    config["platform"] = "mqtt";
-    _haSendMagnitude(index, config);
-
-    if (index == 0) output += "\n\nsensor:";
-    output += "\n";
-    bool first = true;
-
-    for (auto kv : config) {
-        if (first) {
-            output += "  - ";
-            first = false;
-        } else {
-            output += "    ";
-        }
-        String value = kv.value.as<String>();
-        value.replace("%", "'%'");
-        output += kv.key;
-        output += ": ";
-        output += value;
-        output += "\n";
+    if (lightUseCCT() && root.containsKey("white_value")) {
+        lightColdWhite(root["white_value"].as<long>());
     }
-    output += " ";
 
-    root.remove("config");
-    root["haConfig"] = output;
-
-}
-
-#endif // SENSOR_SUPPORT
-
-void _haGetDeviceConfig(JsonObject& config) {
-    config.createNestedArray("identifiers").add(getIdentifier());
-    config["name"] = getSetting("desc", getSetting("hostname"));
-    config["manufacturer"] = getManufacturer().c_str();
-    config["model"] = getDevice().c_str();
-    config["sw_version"] = String(APP_NAME) + " " + APP_VERSION + " (" + getCoreVersion() + ")";
-}
-
-void _haSend() {
-
-    // Pending message to send?
-    if (!_ha_send_flag) return;
-
-    // Are we connected?
-    if (!mqttConnected()) return;
-
-    // Are we still trying to send discovery messages?
-    if (_ha_discovery) return;
-
-    DEBUG_MSG_P(PSTR("[HA] Preparing MQTT discovery message(s)...\n"));
-
-    // Get common device config / context object
-    ha_config_t config;
-
-    // We expect only one instance, create now
-    _ha_discovery = std::make_unique<ha_discovery_t>();
-
-    // Prepare all of the messages and send them in the scheduled function later
-    _ha_discovery->prepareSwitches(config);
-    #if SENSOR_SUPPORT
-        _ha_discovery->prepareMagnitudes(config);
-    #endif
-    
-    _ha_send_flag = false;
-    schedule_function(_haSendDiscovery);
-
-}
-
-void _haConfigure() {
-    const bool enabled = getSetting("haEnabled", 1 == HOMEASSISTANT_ENABLED);
-    _ha_send_flag = (enabled != _ha_enabled);
-    _ha_enabled = enabled;
-
-    // https://github.com/xoseperez/espurna/issues/1273
-    // https://gitter.im/tinkerman-cat/espurna?at=5df8ad4655d9392300268a8c
-    // TODO: ensure that this is called before _lightConfigure()
-    //       in case useCSS value is ever cached by the lights module
-    #if LIGHT_PROVIDER != LIGHT_PROVIDER_NONE
-        if (enabled) {
-            if (getSetting("useCSS", 1 == LIGHT_USE_CSS)) {
-                setSetting("useCSS", 0);
-            }
-        }
-    #endif
-
-    _haSend();
-}
-
-#if WEB_SUPPORT
-
-bool _haWebSocketOnKeyCheck(const char * key, JsonVariant& value) {
-    return (strncmp(key, "ha", 2) == 0);
-}
-
-void _haWebSocketOnVisible(JsonObject& root) {
-    root["haVisible"] = 1;
-}
-
-void _haWebSocketOnConnected(JsonObject& root) {
-    root["haPrefix"] = getSetting("haPrefix", HOMEASSISTANT_PREFIX);
-    root["haEnabled"] = getSetting("haEnabled", 1 == HOMEASSISTANT_ENABLED);
-}
-
-void _haWebSocketOnAction(uint32_t client_id, const char * action, JsonObject& data) {
-    if (strcmp(action, "haconfig") == 0) {
-        ws_on_send_callback_list_t callbacks;
-        #if SENSOR_SUPPORT
-            callbacks.reserve(magnitudeCount() + relayCount());
-        #else
-            callbacks.reserve(relayCount());
-        #endif // SENSOR_SUPPORT
-        {
-            for (unsigned char idx=0; idx<relayCount(); ++idx) {
-                callbacks.push_back([idx](JsonObject& root) {
-                    _haSwitchYaml(idx, root);
-                });
-            }
-        }
-        #if SENSOR_SUPPORT
-        {
-            for (unsigned char idx=0; idx<magnitudeCount(); ++idx) {
-                callbacks.push_back([idx](JsonObject& root) {
-                    _haSensorYaml(idx, root);
-                });
-            }
-        }
-        #endif // SENSOR_SUPPORT
-        if (callbacks.size()) wsPostSequence(client_id, std::move(callbacks));
-    }
-}
-
-#endif // WEB_SUPPORT
-
-#if TERMINAL_SUPPORT
-
-void _haInitCommands() {
-
-    terminalRegisterCommand(F("HA.CONFIG"), [](const terminal::CommandContext&) {
-        for (unsigned char idx=0; idx<relayCount(); ++idx) {
-            DynamicJsonBuffer jsonBuffer(1024);
-            JsonObject& root = jsonBuffer.createObject();
-            _haSwitchYaml(idx, root);
-            DEBUG_MSG(root["haConfig"].as<String>().c_str());
-        }
-        #if SENSOR_SUPPORT
-            for (unsigned char idx=0; idx<magnitudeCount(); ++idx) {
-                DynamicJsonBuffer jsonBuffer(1024);
-                JsonObject& root = jsonBuffer.createObject();
-                _haSensorYaml(idx, root);
-                DEBUG_MSG(root["haConfig"].as<String>().c_str());
-            }
-        #endif // SENSOR_SUPPORT
-        DEBUG_MSG("\n");
-        terminalOK();
-    });
-
-    terminalRegisterCommand(F("HA.SEND"), [](const terminal::CommandContext&) {
-        setSetting("haEnabled", "1");
-        _haConfigure();
-        #if WEB_SUPPORT
-            wsPost(_haWebSocketOnConnected);
-        #endif
-        terminalOK();
-    });
-
-    terminalRegisterCommand(F("HA.CLEAR"), [](const terminal::CommandContext&) {
-        setSetting("haEnabled", "0");
-        _haConfigure();
-        #if WEB_SUPPORT
-            wsPost(_haWebSocketOnConnected);
-        #endif
-        terminalOK();
-    });
-
+    lightUpdate({transition, lightTransitionStep()});
 }
 
 #endif
 
-// -----------------------------------------------------------------------------
+#if SENSOR_SUPPORT
 
-void haSetup() {
+class SensorDiscovery : public Discovery {
+public:
+    SensorDiscovery() = delete;
+    explicit SensorDiscovery(Context& ctx) :
+        _ctx(ctx),
+        _magnitudes(magnitudeCount())
+    {}
 
-    _haConfigure();
+    JsonObject& root() {
+        if (!_root) {
+            _root = &_ctx.makeObject();
+        }
 
-    #if WEB_SUPPORT
-        wsRegister()
-            .onVisible(_haWebSocketOnVisible)
-            .onConnected(_haWebSocketOnConnected)
-            .onAction(_haWebSocketOnAction)
-            .onKeyCheck(_haWebSocketOnKeyCheck);
-    #endif
+        return *_root;
+    }
 
-    #if TERMINAL_SUPPORT
-        _haInitCommands();
-    #endif
+    bool ok() const {
+        return _index < _magnitudes;
+    }
 
-    // On MQTT connect check if we have something to send
-    mqttRegister([](unsigned int type, const char * topic, const char * payload) {
-        if (type == MQTT_CONNECT_EVENT) schedule_function(_haSend);
-        if (type == MQTT_DISCONNECT_EVENT) _ha_send_flag = _ha_enabled;
+    const String& topic() override {
+        if (!_topic.length()) {
+            _topic = _ctx.prefix();
+            _topic += F("/sensor/");
+            _topic += uniqueId();
+            _topic += F("/config");
+        }
+
+        return _topic;
+    }
+
+    const String& message() override {
+        if (!_message.length()) {
+            auto& json = root();
+            json["dev"] = _ctx.device();
+            json["uniq_id"] = uniqueId();
+
+            json["name"] = _ctx.name() + ' ' + name() + ' ' + localId();
+            json["stat_t"] = mqttTopic(magnitudeTopicIndex(_index).c_str(), false);
+            json["unit_of_meas"] = magnitudeUnits(_index);
+
+            json.printTo(_message);
+        }
+
+        return _message;
+    }
+
+    const String& name() {
+        if (!_name.length()) {
+            _name = magnitudeTopic(magnitudeType(_index));
+        }
+
+        return _name;
+    }
+
+    unsigned char localId() const {
+        return magnitudeIndex(_index);
+    }
+
+    const String& uniqueId() {
+        if (!_unique_id.length()) {
+            _unique_id = _ctx.identifier() + '_' + name() + '_' + localId();
+        }
+
+        return _unique_id;
+    }
+
+    bool next() override {
+        if (_index < _magnitudes) {
+            auto current = _index;
+            ++_index;
+            if ((_index > current) && (_index < _magnitudes)) {
+                _unique_id = "";
+                _name = "";
+                _topic = "";
+                _message = "";
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+private:
+    Context& _ctx;
+    JsonObject* _root { nullptr };
+
+    unsigned char _index { 0u };
+    unsigned char _magnitudes { 0u };
+
+    String _unique_id;
+    String _name;
+    String _topic;
+    String _message;
+};
+
+#endif
+
+// Reworked discovery class. Try to send and wait for MQTT QoS 1 publish ACK to continue.
+// Topic and message are generated on demand and most of JSON payload is cached for re-use to save RAM.
+
+class DiscoveryTask {
+public:
+    using Entity = std::unique_ptr<Discovery>;
+    using Entities = std::forward_list<Entity>;
+
+    static constexpr int Retries { 5 };
+    static constexpr unsigned long WaitShortMs { 100ul };
+    static constexpr unsigned long WaitLongMs { 1000ul };
+
+    DiscoveryTask(bool enabled) :
+        _enabled(enabled)
+    {}
+
+    void add(Entity&& entity) {
+        _entities.push_front(std::move(entity));
+    }
+
+    template <typename T>
+    void add() {
+        _entities.push_front(std::make_unique<T>(_ctx));
+    }
+
+    bool retry() {
+        if (_retry < 0) {
+            return false;
+        }
+
+        return (--_retry > 0);
+    }
+
+    Context& context() {
+        return _ctx;
+    }
+
+    bool done() const {
+        return _entities.empty();
+    }
+
+    bool ok() const {
+        if ((_retry > 0) && !_entities.empty()) {
+            auto& entity = _entities.front();
+            return entity->ok();
+        }
+
+        return false;
+    }
+
+    template <typename T>
+    bool send(T&& action) {
+        while (!_entities.empty()) {
+            auto& entity = _entities.front();
+            if (!entity->ok()) {
+                _entities.pop_front();
+                _ctx.reset();
+                continue;
+            }
+
+            const auto* topic = entity->topic().c_str();
+            const auto* msg = _enabled
+                ? entity->message().c_str()
+                : "";
+
+            if (action(topic, msg)) {
+                if (!entity->next()) {
+                    _retry = Retries;
+                    _entities.pop_front();
+                    _ctx.reset();
+                }
+                return true;
+            }
+
+            return false;
+        }
+
+        return false;
+    }
+
+private:
+    bool _enabled { false };
+
+    int _retry { Retries };
+    Context _ctx { makeContext() };
+    Entities _entities;
+};
+
+namespace internal {
+
+using TaskPtr = std::shared_ptr<DiscoveryTask>;
+using FlagPtr = std::shared_ptr<bool>;
+
+bool retain { false };
+bool enabled { false };
+
+enum class State {
+    Initial,
+    Pending,
+    Sent
+};
+
+State state { State::Initial };
+Ticker timer;
+
+void send(TaskPtr ptr, FlagPtr flag_ptr);
+
+void stop(bool done) {
+    timer.detach();
+    if (done) {
+        DEBUG_MSG_P(PSTR("[HA] Stopping discovery\n"));
+        state = State::Sent;
+    } else {
+        DEBUG_MSG_P(PSTR("[HA] Discovery error\n"));
+        state = State::Pending;
+    }
+}
+
+void schedule(unsigned long wait, TaskPtr ptr, FlagPtr flag_ptr) {
+    internal::timer.once_ms_scheduled(wait, [ptr, flag_ptr]() {
+        send(ptr, flag_ptr);
+    });
+}
+
+void schedule(TaskPtr ptr, FlagPtr flag_ptr) {
+    schedule(DiscoveryTask::WaitShortMs, ptr, flag_ptr);
+}
+
+void schedule(TaskPtr ptr) {
+    schedule(DiscoveryTask::WaitShortMs, ptr, std::make_shared<bool>(true));
+}
+
+void send(TaskPtr ptr, FlagPtr flag_ptr) {
+    auto& task = *ptr;
+    if (!mqttConnected() || task.done()) {
+        stop(true);
+        return;
+    }
+
+    auto& flag = *flag_ptr;
+    if (!flag) {
+        if (task.retry()) {
+            schedule(ptr, flag_ptr);
+        } else {
+            stop(false);
+        }
+        return;
+    }
+
+    uint16_t pid { 0u };
+    auto res = task.send([&](const char* topic, const char* message) {
+        pid = ::mqttSendRaw(topic, message, internal::retain, 1);
+        return pid > 0;
     });
 
-    // Main callbacks
-    espurnaRegisterReload(_haConfigure);
+#if MQTT_LIBRARY == MQTT_LIBRARY_ASYNCMQTTCLIENT
+    // - async fails when disconneted and when it's buffers are filled, which should be resolved after $LATENCY
+    // and the time it takes for the lwip to process it. future versions use queue, but could still fail when low on RAM
+    // - lwmqtt will fail when disconnected (already checked above) and *will* disconnect in case publish fails.
+    // ::publish() will wait for the puback, so we don't have to do it ourselves. not tested.
+    // - pubsub will fail when it can't buffer the payload *or* the underlying WiFiClient calls fail. also not tested.
 
+    if (res) {
+        flag = false;
+        mqttOnPublish(pid, [flag_ptr]() {
+            (*flag_ptr) = true;
+        });
+    }
+#endif
+
+    auto wait = res
+        ? DiscoveryTask::WaitShortMs
+        : DiscoveryTask::WaitLongMs;
+
+    if (res || task.retry()) {
+        schedule(wait, ptr, flag_ptr);
+        return;
+    }
+
+    stop(false);
+}
+
+} // namespace internal
+
+void publishDiscovery() {
+    if (!mqttConnected() || internal::timer.active() || (internal::state != internal::State::Pending)) {
+        return;
+    }
+
+    auto task = std::make_shared<DiscoveryTask>(internal::enabled);
+
+#if LIGHT_PROVIDER != LIGHT_PROVIDER_NONE
+    task->add<LightDiscovery>();
+#endif
+#if RELAY_SUPPORT
+    task->add<RelayDiscovery>();
+#endif
+#if SENSOR_SUPPORT
+    task->add<SensorDiscovery>();
+#endif
+
+    // only happens when nothing is configured to do the add()
+    if (task->done()) {
+        return;
+    }
+
+    internal::schedule(task);
+}
+
+void configure() {
+    bool current = internal::enabled;
+    internal::enabled = getSetting("haEnabled", 1 == HOMEASSISTANT_ENABLED);
+    internal::retain = getSetting("haRetain", 1 == HOMEASSISTANT_RETAIN);
+
+    if (internal::enabled != current) {
+        internal::state = internal::State::Pending;
+    }
+
+    homeassistant::publishDiscovery();
+}
+
+void mqttCallback(unsigned int type, const char* topic, char* payload) {
+    if (MQTT_DISCONNECT_EVENT == type) {
+        if (internal::state == internal::State::Sent) {
+            internal::state = internal::State::Pending;
+        }
+        internal::timer.detach();
+        return;
+    }
+
+    if (MQTT_CONNECT_EVENT == type) {
+#if LIGHT_PROVIDER != LIGHT_PROVIDER_NONE
+        ::mqttSubscribe(MQTT_TOPIC_LIGHT_JSON);
+#endif
+        ::schedule_function(publishDiscovery);
+        return;
+    }
+
+#if LIGHT_PROVIDER != LIGHT_PROVIDER_NONE
+    if (type == MQTT_MESSAGE_EVENT) {
+        String t = ::mqttMagnitude(topic);
+        if (t.equals(MQTT_TOPIC_LIGHT_JSON)) {
+            receiveLightJson(payload);
+        }
+        return;
+    }
+#endif
+}
+
+namespace web {
+
+#if WEB_SUPPORT
+
+void onVisible(JsonObject& root) {
+    root["haVisible"] = 1;
+}
+
+void onConnected(JsonObject& root) {
+    root["haPrefix"] = getSetting("haPrefix", HOMEASSISTANT_PREFIX);
+    root["haEnabled"] = getSetting("haEnabled", 1 == HOMEASSISTANT_ENABLED);
+    root["haRetain"] = getSetting("haRetain", 1 == HOMEASSISTANT_RETAIN);
+}
+
+bool onKeyCheck(const char* key, JsonVariant& value) {
+    return (strncmp(key, "ha", 2) == 0);
+}
+
+#endif
+
+} // namespace web
+} // namespace homeassistant
+
+// This module no longer implements .yaml generation, since we can't:
+// - use unique_id in the device config
+// - have abbreviated keys
+// - have mqtt reliably return the correct status & command payloads when it is disabled
+//   (yet? needs reworked configuration section or making functions read settings directly)
+
+void haSetup() {
+#if WEB_SUPPORT
+    wsRegister()
+        .onVisible(homeassistant::web::onVisible)
+        .onConnected(homeassistant::web::onConnected)
+        .onKeyCheck(homeassistant::web::onKeyCheck);
+#endif
+
+#if LIGHT_PROVIDER != LIGHT_PROVIDER_NONE
+    lightSetReportListener(homeassistant::publishLightJson);
+    mqttHeartbeat(homeassistant::heartbeat);
+#endif
+    mqttRegister(homeassistant::mqttCallback);
+
+#if TERMINAL_SUPPORT
+    terminalRegisterCommand(F("HA.SEND"), [](const terminal::CommandContext& ctx) {
+        using namespace homeassistant::internal;
+        state = State::Pending;
+        homeassistant::publishDiscovery();
+        terminalOK(ctx);
+    });
+#endif
+
+    espurnaRegisterReload(homeassistant::configure);
+    homeassistant::configure();
 }
 
 #endif // HOMEASSISTANT_SUPPORT

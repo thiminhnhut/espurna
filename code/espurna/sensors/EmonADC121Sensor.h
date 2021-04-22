@@ -7,7 +7,6 @@
 
 #pragma once
 
-#include <Arduino.h>
 
 #include "../utils.h"
 #include "EmonSensor.h"
@@ -143,8 +142,7 @@ class EmonADC121Sensor : public EmonSensor {
             i2c_write_uint8(_address, ADC121_REG_CONFIG, 0);
         }
 
-        unsigned int readADC(unsigned char channel) {
-            UNUSED(channel);
+        unsigned int readADC(unsigned char) {
             unsigned int value = i2c_read_uint16(_address, ADC121_REG_RESULT) & 0x0FFF;
             return value;
         }

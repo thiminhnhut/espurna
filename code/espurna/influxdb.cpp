@@ -13,14 +13,15 @@ Copyright (C) 2017-2019 by Xose Pérez <xose dot perez at gmail dot com>
 #include <map>
 #include <memory>
 
-#include "broker.h"
+#include "mqtt.h"
 #include "rpc.h"
+#include "relay.h"
 #include "sensor.h"
 #include "terminal.h"
 #include "ws.h"
-#include "libs/AsyncClientHelpers.h"
 
 #include <ESPAsyncTCP.h>
+#include "libs/AsyncClientHelpers.h"
 
 const char InfluxDb_http_success[] = "HTTP/1.1 204";
 const char InfluxDb_http_template[] PROGMEM = "POST /write?db=%s&u=%s&p=%s HTTP/1.1\r\nHost: %s:%u\r\nContent-Length: %d\r\n\r\n";
@@ -156,12 +157,12 @@ void _idbConfigure() {
     if (_idb_enabled && !_idb_client) _idbInitClient();
 }
 
-void _idbBrokerSensor(const String& topic, unsigned char id, double, const char* value) {
+void _idbSendSensor(const String& topic, unsigned char id, double, const char* value) {
     idbSend(topic.c_str(), id, value);
 }
 
-void _idbBrokerStatus(const String& topic, unsigned char id, unsigned int value) {
-    idbSend(topic.c_str(), id, String(int(value)).c_str());
+void _idbSendStatus(size_t id, bool status) {
+    idbSend(MQTT_TOPIC_RELAY, id, status ? "1" : "0"); // "status" ?
 }
 
 // -----------------------------------------------------------------------------
@@ -218,7 +219,7 @@ void _idbFlush() {
 
     _idb_client->payload = "";
     for (auto& pair : _idb_client->values) {
-        if (!isNumber(pair.second.c_str())) {
+        if (!isNumber(pair.second)) {
             String quoted;
             quoted.reserve(pair.second.length() + 2);
             quoted += '"';
@@ -249,7 +250,38 @@ bool idbEnabled() {
     return _idb_enabled;
 }
 
+bool _idbHeartbeat(heartbeat::Mask mask) {
+    if (mask & heartbeat::Report::Uptime)
+        idbSend(MQTT_TOPIC_UPTIME, String(systemUptime()).c_str());
+
+    if (mask & heartbeat::Report::Freeheap) {
+        auto stats = systemHeapStats();
+        idbSend(MQTT_TOPIC_FREEHEAP, String(stats.available).c_str());
+    }
+
+    if (mask & heartbeat::Report::Rssi)
+        idbSend(MQTT_TOPIC_RSSI, String(WiFi.RSSI()).c_str());
+
+    if ((mask & heartbeat::Report::Vcc) && (ADC_MODE_VALUE == ADC_VCC))
+        idbSend(MQTT_TOPIC_VCC, String(ESP.getVcc()).c_str());
+
+    if (mask & heartbeat::Report::Loadavg)
+        idbSend(MQTT_TOPIC_LOADAVG, String(systemLoadAverage()).c_str());
+
+    if (mask & heartbeat::Report::Ssid)
+        idbSend(MQTT_TOPIC_SSID, WiFi.SSID().c_str());
+
+    if (mask & heartbeat::Report::Bssid)
+        idbSend(MQTT_TOPIC_BSSID, WiFi.BSSIDstr().c_str());
+
+    return true;
+}
+
 void idbSetup() {
+    systemHeartbeat(_idbHeartbeat);
+    systemHeartbeat(_idbHeartbeat,
+        getSetting("idbHbMode", heartbeat::currentMode()),
+        getSetting("idbHbIntvl", heartbeat::currentInterval()));
 
     _idbConfigure();
 
@@ -260,10 +292,12 @@ void idbSetup() {
             .onKeyCheck(_idbWebSocketOnKeyCheck);
     #endif
 
-    StatusBroker::Register(_idbBrokerStatus);
+    #if RELAY_SUPPORT
+        relaySetStatusChange(_idbSendStatus);
+    #endif
 
     #if SENSOR_SUPPORT
-        SensorReportBroker::Register(_idbBrokerSensor);
+        sensorSetMagnitudeReport(_idbSendSensor);
     #endif
 
     espurnaRegisterReload(_idbConfigure);
@@ -279,7 +313,6 @@ void idbSetup() {
             idbSend(ctx.argv[1].c_str(), ctx.argv[2].toInt(), ctx.argv[3].c_str());
         });
     #endif
-
 }
 
 #endif

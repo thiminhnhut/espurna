@@ -12,7 +12,7 @@ Copyright (C) 2020 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 #if TERMINAL_SUPPORT
 
 #include "api.h"
-#include "debug.h"
+#include "crash.h"
 #include "settings.h"
 #include "system.h"
 #include "telnet.h"
@@ -34,8 +34,6 @@ Copyright (C) 2020 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 #include <Schedule.h>
 #include <Stream.h>
 
-#if LWIP_VERSION_MAJOR != 1
-
 // not yet CONNECTING or LISTENING
 extern struct tcp_pcb *tcp_bound_pcbs;
 // accepting or sending data
@@ -43,41 +41,31 @@ extern struct tcp_pcb *tcp_active_pcbs;
 // // TIME-WAIT status
 extern struct tcp_pcb *tcp_tw_pcbs;
 
-#endif
-
 namespace {
 
 // Based on libs/StreamInjector.h by Xose Pérez <xose dot perez at gmail dot com> (see git-log for more info)
 // Instead of custom write(uint8_t) callback, we provide writer implementation in-place
 
+template <size_t Capacity>
 struct TerminalIO final : public Stream {
-
-    TerminalIO(size_t capacity = 128) :
-        _buffer(new char[capacity]),
-        _capacity(capacity),
-        _write(0),
-        _read(0)
-    {}
-
-    ~TerminalIO() {
-        delete[] _buffer;
-    }
+    using Buffer = std::array<char, Capacity>;
 
     // ---------------------------------------------------------------------
-    // Injects data into the internal buffer so we can read() it
+    // Stream part of the interface injects data into the internal buffer,
+    // so we can later use the ::read()
     // ---------------------------------------------------------------------
 
-    size_t capacity() {
-        return _capacity;
+    static constexpr size_t capacity() {
+        return Capacity;
     }
 
     size_t inject(char ch) {
         _buffer[_write] = ch;
-        _write = (_write + 1) % _capacity;
+        _write = (_write + 1) % Capacity;
         return 1;
     }
 
-    size_t inject(char *data, size_t len) {
+    size_t inject(const char* data, size_t len) {
         for (size_t index = 0; index < len; ++index) {
             inject(data[index]);
         }
@@ -90,10 +78,11 @@ struct TerminalIO final : public Stream {
     // ---------------------------------------------------------------------
 
     // Return data from the internal buffer
+    // Note that this cannot be negative, but the API requires `int`
     int available() override {
-        unsigned int bytes = 0;
+        size_t bytes = 0;
         if (_read > _write) {
-            bytes += (_write - _read + _capacity);
+            bytes += (_write - _read + Capacity);
         } else if (_read < _write) {
             bytes += (_write - _read);
         }
@@ -112,7 +101,7 @@ struct TerminalIO final : public Stream {
         int ch = -1;
         if (_read != _write) {
             ch = _buffer[_read];
-            _read = (_read + 1) % _capacity;
+            _read = (_read + 1) % Capacity;
         }
         return ch;
     }
@@ -129,24 +118,9 @@ struct TerminalIO final : public Stream {
         _read = _write;
     }
 
-    size_t write(const uint8_t* buffer, size_t size) override {
-    // Buffer data until we encounter line break, then flush via Raw debug method
-    // (which is supposed to 1-to-1 copy the data, without adding the timestamp)
+    size_t write(const uint8_t* bytes, size_t size) override {
 #if DEBUG_SUPPORT
-        if (!size) return 0;
-        if (buffer[size-1] == '\0') return 0;
-        if (_output.capacity() < (size + 2)) {
-            _output.reserve(_output.size() + size + 2);
-        }
-        _output.insert(_output.end(),
-            reinterpret_cast<const char*>(buffer),
-            reinterpret_cast<const char*>(buffer) + size
-        );
-        if (_output.end() != std::find(_output.begin(), _output.end(), '\n')) {
-            _output.push_back('\0');
-            debugSendRaw(_output.data());
-            _output.clear();
-        }
+        debugSendBytes(bytes, size);
 #endif
         return size;
     }
@@ -156,21 +130,22 @@ struct TerminalIO final : public Stream {
         return write(buffer, 1);
     }
 
-    private:
-
-#if DEBUG_SUPPORT
-    std::vector<char> _output;
-#endif
-
-    char * _buffer;
-    unsigned char _capacity;
-    unsigned char _write;
-    unsigned char _read;
-
+private:
+    Buffer _buffer {};
+    size_t _write { 0ul };
+    size_t _read { 0ul };
 };
 
-auto _io = TerminalIO(TERMINAL_SHARED_BUFFER_SIZE);
-terminal::Terminal _terminal(_io, _io.capacity());
+constexpr size_t _terminalBufferSize() {
+    return TERMINAL_SHARED_BUFFER_SIZE;
+}
+
+namespace {
+
+using Io = TerminalIO<_terminalBufferSize()>;
+
+Io _io;
+terminal::Terminal _terminal(_io, Io::capacity());
 
 // TODO: re-evaluate how and why this is used
 #if SERIAL_RX_ENABLED
@@ -181,105 +156,198 @@ static unsigned char _serial_rx_pointer = 0;
 
 #endif // SERIAL_RX_ENABLED
 
+} // namespace
+
 // -----------------------------------------------------------------------------
 // Commands
 // -----------------------------------------------------------------------------
 
 void _terminalHelpCommand(const terminal::CommandContext& ctx) {
+    auto names = _terminal.names();
 
-    // Get sorted list of commands
-    auto commands = _terminal.commandNames();
-    std::sort(commands.begin(), commands.end(), [](const String& rhs, const String& lhs) -> bool {
-        return lhs.compareTo(rhs) > 0;
+    // XXX: Core's ..._P funcs only allow 2nd pointer to be in PROGMEM,
+    //      explicitly load the 1st one
+    std::sort(names.begin(), names.end(), [](const __FlashStringHelper* lhs, const __FlashStringHelper* rhs) {
+        const String lhs_as_string(lhs);
+        return strncasecmp_P(lhs_as_string.c_str(), reinterpret_cast<const char*>(rhs), lhs_as_string.length()) < 0;
     });
 
-    // Output the list asap
     ctx.output.print(F("Available commands:\n"));
-    for (auto& command : commands) {
-        ctx.output.printf("> %s\n", command.c_str());
+    for (auto* name : names) {
+        ctx.output.printf("> %s\n", reinterpret_cast<const char*>(name));
     }
 
     terminalOK(ctx.output);
-
 }
 
-#if LWIP_VERSION_MAJOR != 1
+namespace dns {
 
-String _terminalPcbStateToString(unsigned char state) {
-    switch (state) {
-        case 0: return F("CLOSED");
-        case 1: return F("LISTEN");
-        case 2: return F("SYN_SENT");
-        case 3: return F("SYN_RCVD");
-        case 4: return F("ESTABLISHED");
-        case 5: return F("FIN_WAIT_1");
-        case 6: return F("FIN_WAIT_2");
-        case 7: return F("CLOSE_WAIT");
-        case 8: return F("CLOSING");
-        case 9: return F("LAST_ACK");
-        case 10: return F("TIME_WAIT");
-        default: return String(int(state));
-    };
-}
+using Callback = std::function<void(const char* name, const ip_addr_t* addr, void* arg)>;
 
-void _terminalPrintTcpPcb(tcp_pcb* pcb) {
+namespace internal {
 
-    char remote_ip[32] = {0};
-    char local_ip[32] = {0};
+struct Task {
+    Task() = delete;
+    explicit Task(String&& hostname, Callback&& callback) :
+        _hostname(std::move(hostname)),
+        _callback(std::move(callback))
+    {}
 
-    inet_ntoa_r((pcb->local_ip), local_ip, sizeof(local_ip));
-    inet_ntoa_r((pcb->remote_ip), remote_ip, sizeof(remote_ip));
-
-    DEBUG_MSG_P(PSTR("state=%s local=%s:%u remote=%s:%u snd_queuelen=%u lastack=%u send_wnd=%u rto=%u\n"),
-            _terminalPcbStateToString(pcb->state).c_str(),
-            local_ip, pcb->local_port,
-            remote_ip, pcb->remote_port,
-            pcb->snd_queuelen, pcb->lastack,
-            pcb->snd_wnd, pcb->rto
-    );
-
-}
-
-void _terminalPrintTcpPcbs() {
-
-    tcp_pcb *pcb;
-    //DEBUG_MSG_P(PSTR("Active PCB states:\n"));
-    for (pcb = tcp_active_pcbs; pcb != NULL; pcb = pcb->next) {
-        _terminalPrintTcpPcb(pcb);
-    }
-    //DEBUG_MSG_P(PSTR("TIME-WAIT PCB states:\n"));
-    for (pcb = tcp_tw_pcbs; pcb != NULL; pcb = pcb->next) {
-        _terminalPrintTcpPcb(pcb);
-    }
-    //DEBUG_MSG_P(PSTR("BOUND PCB states:\n"));
-    for (pcb = tcp_bound_pcbs; pcb != NULL; pcb = pcb->next) {
-        _terminalPrintTcpPcb(pcb);
+    ip_addr_t* addr() {
+        return &_addr;
     }
 
+    const char* hostname() const {
+        return _hostname.c_str();
+    }
+
+    void callback(const char* name, const ip_addr_t* addr, void* arg) {
+        _callback(name, addr, arg);
+    }
+
+    void callback() {
+        _callback(hostname(), addr(), nullptr);
+    }
+
+private:
+    String _hostname;
+    Callback _callback;
+    ip_addr_t _addr { IPADDR_NONE };
+};
+
+using TaskPtr = std::unique_ptr<Task>;
+TaskPtr task;
+
+void callback(const char* name, const ip_addr_t* addr, void* arg) {
+    if (task) {
+        task->callback(name, addr, arg);
+    }
+    task.reset();
 }
 
-void _terminalPrintDnsResult(const char* name, const ip_addr_t* address) {
-    // TODO fix asynctcp building with lwip-ipv6
-    /*
-    #if LWIP_IPV6
-        if (IP_IS_V6(address)) {
-            DEBUG_MSG_P(PSTR("[DNS] %s has IPV6 address %s\n"), name, ip6addr_ntoa(ip_2_ip6(address)));
+} // namespace internal
+
+bool started() {
+    return static_cast<bool>(internal::task);
+}
+
+void start(String&& hostname, Callback&& callback) {
+    auto task = std::make_unique<internal::Task>(std::move(hostname), std::move(callback));
+
+    switch (dns_gethostbyname(task->hostname(), task->addr(), internal::callback, nullptr)) {
+    case ERR_OK:
+        task->callback();
+        break;
+    case ERR_INPROGRESS:
+        internal::task = std::move(task);
+        break;
+    default:
+        break;
+    }
+}
+
+} // namespace dns
+
+extern "C" uint32_t _FS_start;
+extern "C" uint32_t _FS_end;
+
+struct Layout {
+    Layout() = delete;
+
+    constexpr Layout(const Layout&) = default;
+    constexpr Layout(Layout&&) = default;
+    constexpr Layout(const char* const name, uint32_t start, uint32_t end) :
+        _name(name),
+        _start(start),
+        _end(end)
+    {}
+
+    constexpr uint32_t size() const {
+        return _end - _start;
+    }
+
+    constexpr uint32_t start() const {
+        return _start;
+    }
+
+    constexpr uint32_t end() const {
+        return _end;
+    }
+
+    constexpr const char* name() const {
+        return _name;
+    }
+
+private:
+    const char* const _name;
+    uint32_t _start;
+    uint32_t _end;
+};
+
+struct Layouts {
+    using List = std::forward_list<Layout>;
+
+    Layouts() = delete;
+    explicit Layouts(uint32_t size) :
+        _size(size),
+        _current(size),
+        _sectors(size / SPI_FLASH_SEC_SIZE)
+    {}
+
+    const Layout* head() const {
+        if (_list.empty()) {
+            return nullptr;
         }
-    #endif
-    */
-    DEBUG_MSG_P(PSTR("[DNS] %s has address %s\n"), name, ipaddr_ntoa(address));
-}
 
-void _terminalDnsFound(const char* name, const ip_addr_t* result, void*) {
-    if (!result) {
-        DEBUG_MSG_P(PSTR("[DNS] %s not found\n"), name);
-        return;
+        return &_list.front();
     }
 
-    _terminalPrintDnsResult(name, result);
-}
+    bool lock() {
+        if (_lock) {
+            return true;
+        }
 
-#endif // LWIP_VERSION_MAJOR != 1
+        _lock = true;
+        return false;
+    }
+
+    uint32_t sectors() const {
+        return _sectors;
+    }
+
+    uint32_t size() const {
+        return _size - _current;
+    }
+
+    uint32_t current() const {
+        return _current;
+    }
+
+    Layouts& add(const char* const name, uint32_t size) {
+        if (!_lock && _current >= size) {
+            Layout layout(name, _current - size, _current);
+            _current -= layout.size();
+            _list.push_front(layout);
+        }
+
+        return *this;
+    }
+
+    template <typename T>
+    void foreach(T&& callback) {
+        for (auto& layout : _list) {
+            callback(layout);
+        }
+    }
+
+private:
+    bool _lock { false };
+    List _list;
+    uint32_t _size;
+    uint32_t _current;
+    uint32_t _sectors;
+};
+
 
 void _terminalInitCommands() {
 
@@ -288,125 +356,219 @@ void _terminalInitCommands() {
 
     terminalRegisterCommand(F("ERASE.CONFIG"), [](const terminal::CommandContext&) {
         terminalOK();
-        customResetReason(CUSTOM_RESET_TERMINAL);
+        customResetReason(CustomResetReason::Terminal);
         eraseSDKConfig();
         *((int*) 0) = 0; // see https://github.com/esp8266/Arduino/issues/1494
     });
 
+    terminalRegisterCommand(F("ADC"), [](const terminal::CommandContext& ctx) {
+        const int pin = (ctx.argc == 2)
+            ? ctx.argv[1].toInt()
+            : A0;
+
+        ctx.output.printf_P(PSTR("value %d\n"), analogRead(pin));
+        terminalOK(ctx);
+    });
+
     terminalRegisterCommand(F("GPIO"), [](const terminal::CommandContext& ctx) {
-        int pin = -1;
+        const int pin = (ctx.argc >= 2)
+            ? ctx.argv[1].toInt()
+            : -1;
 
-        if (ctx.argc < 2) {
-            DEBUG_MSG("Printing all GPIO pins:\n");
-        } else {
-            pin = ctx.argv[1].toInt();
-            if (!gpioValid(pin)) {
-                terminalError(F("Invalid GPIO pin"));
-                return;
+        if ((pin >= 0) && !gpioValid(pin)) {
+            terminalError(ctx, F("Invalid pin number"));
+            return;
+        }
+
+        int start = 0;
+        int end = gpioPins();
+
+        switch (ctx.argc) {
+        case 3:
+            pinMode(pin, OUTPUT);
+            digitalWrite(pin, (1 == ctx.argv[2].toInt()));
+            break;
+        case 2:
+            start = pin;
+            end = pin + 1;
+            // fallthrough into print
+        case 1:
+            for (auto current = start; current < end; ++current) {
+                if (gpioValid(current)) {
+                    ctx.output.printf_P(PSTR("%c %s @ GPIO%02d (%s)\n"),
+                        gpioLocked(current) ? '*' : ' ',
+                        GPEP(current) ? "OUTPUT" : "INPUT ",
+                        current,
+                        (HIGH == digitalRead(current)) ? "HIGH" : "LOW"
+                    );
+                }
             }
+            break;
+        }
 
-            if (ctx.argc > 2) {
-                bool state = String(ctx.argv[2]).toInt() == 1;
-                digitalWrite(pin, state);
+        terminalOK(ctx);
+    });
+
+    terminalRegisterCommand(F("HEAP"), [](const terminal::CommandContext& ctx) {
+        static auto initial = systemInitialFreeHeap();
+
+        auto stats = systemHeapStats();
+        ctx.output.printf_P(PSTR("initial: %u, available: %u, fragmentation: %hhu%%\n"),
+            initial, stats.available, stats.frag_pct);
+
+        terminalOK(ctx);
+    });
+
+    terminalRegisterCommand(F("STACK"), [](const terminal::CommandContext& ctx) {
+        ctx.output.printf_P(PSTR("continuation stack initial: %d, free: %u\n"),
+            CONT_STACKSIZE, systemFreeStack());
+        terminalOK(ctx);
+    });
+
+    terminalRegisterCommand(F("INFO"), [](const terminal::CommandContext& ctx) {
+        if (!systemCheck()) {
+            ctx.output.print(F("\n\n!!! device is in safe mode !!!\n\n"));
+        }
+
+        ctx.output.printf_P(PSTR("%s %s built %s\n"), getAppName(), getVersion(), buildTime().c_str());
+        ctx.output.printf_P(PSTR("mcu: esp8266 chipid: %s\n"), getFullChipId().c_str());
+        ctx.output.printf_P(PSTR("sdk: %s core: %s\n"),
+                ESP.getSdkVersion(), getCoreVersion().c_str());
+        ctx.output.printf_P(PSTR("md5: %s\n"), ESP.getSketchMD5().c_str());
+        ctx.output.printf_P(PSTR("support: %s\n"), getEspurnaModules());
+#if SENSOR_SUPPORT
+        ctx.output.printf_P(PSTR("sensors: %s\n"), getEspurnaSensors());
+#endif
+
+#if DEBUG_SUPPORT
+        crashResetReason(ctx.output);
+#endif
+        terminalOK(ctx);
+    });
+
+    terminalRegisterCommand(F("STORAGE"), [](const terminal::CommandContext& ctx) {
+        ctx.output.printf_P(PSTR("flash chip ID: 0x%06X\n"), ESP.getFlashChipId());
+        ctx.output.printf_P(PSTR("speed: %u\n"), ESP.getFlashChipSpeed());
+        ctx.output.printf_P(PSTR("mode: %s\n"), getFlashChipMode());
+
+        ctx.output.printf_P(PSTR("size: %u (SPI), %u (SDK)\n"),
+            ESP.getFlashChipRealSize(), ESP.getFlashChipSize());
+
+        Layouts layout(ESP.getFlashChipRealSize());
+
+        // SDK specifies a hard-coded layout, there's no data beyond
+        // (...addressable by the Core, since it adheres the setting)
+        if (ESP.getFlashChipRealSize() > ESP.getFlashChipSize()) {
+            layout.add("unused", ESP.getFlashChipRealSize() - ESP.getFlashChipSize());
+        }
+
+        // app is at a normal location, [0...size), but... since it is offset by the free space, make sure it is aligned
+        // to the sector size (...and it is expected from the getFreeSketchSpace, as the app will align to use the fixed
+        // sector address for OTA writes).
+
+        layout.add("sdk", 4 * SPI_FLASH_SEC_SIZE);
+        layout.add("eeprom", eepromSpace());
+
+        auto app_size = (ESP.getSketchSize() + FLASH_SECTOR_SIZE - 1) & (~(FLASH_SECTOR_SIZE - 1));
+        auto ota_size = layout.current() - app_size;
+
+        // OTA is allowed to use all but one eeprom sectors that, leaving the last one
+        // for the settings snapshot during the update
+
+        layout.add("ota", ota_size);
+        layout.add("app", app_size);
+
+        layout.foreach([&](const Layout& l) {
+            ctx.output.printf_P("%-6s [%08X...%08X) (%u bytes)\n", l.name(), l.start(), l.end(), l.size());
+        });
+    });
+
+    terminalRegisterCommand(F("RESET"), [](const terminal::CommandContext& ctx) {
+        auto count = 1;
+        if (ctx.argc == 2) {
+            count = ctx.argv[1].toInt();
+            if (count < SYSTEM_CHECK_MAX) {
+                systemStabilityCounter(count);
             }
         }
 
-        for (int i = 0; i <= 15; i++) {
-            if (gpioValid(i) && (pin == -1 || pin == i)) {
-                DEBUG_MSG_P(PSTR("GPIO %s pin %d is %s\n"), GPEP(i) ? "output" : "input", i, digitalRead(i) == HIGH ? "HIGH" : "LOW");
-            }
+        terminalOK(ctx);
+        deferredReset(100, CustomResetReason::Terminal);
+    });
+
+    terminalRegisterCommand(F("UPTIME"), [](const terminal::CommandContext& ctx) {
+        ctx.output.printf_P(PSTR("uptime %s\n"), getUptime().c_str());
+        terminalOK(ctx);
+    });
+
+#if SECURE_CLIENT == SECURE_CLIENT_BEARSSL
+    terminalRegisterCommand(F("MFLN.PROBE"), [](const terminal::CommandContext& ctx) {
+        if (ctx.argc != 3) {
+            terminalError(ctx, F("<url> <value>"));
+            return;
         }
 
-        terminalOK();
-    });
+        URL _url(ctx.argv[1]);
+        uint16_t requested_mfln = atol(ctx.argv[2].c_str());
 
-    terminalRegisterCommand(F("HEAP"), [](const terminal::CommandContext&) {
-        infoHeapStats();
-        terminalOK();
-    });
+        auto client = std::make_unique<BearSSL::WiFiClientSecure>();
+        client->setInsecure();
 
-    terminalRegisterCommand(F("STACK"), [](const terminal::CommandContext&) {
-        infoMemory("Stack", CONT_STACKSIZE, getFreeStack());
-        terminalOK();
-    });
+        if (client->probeMaxFragmentLength(_url.host.c_str(), _url.port, requested_mfln)) {
+            terminalOK(ctx);
+            return;
+        }
 
-    terminalRegisterCommand(F("INFO"), [](const terminal::CommandContext&) {
-        info();
-        terminalOK();
+        terminalError(ctx, F("Buffer size not supported"));
     });
+#endif
 
-    terminalRegisterCommand(F("RESET"), [](const terminal::CommandContext&) {
-        terminalOK();
-        deferredReset(100, CUSTOM_RESET_TERMINAL);
-    });
+    terminalRegisterCommand(F("HOST"), [](const terminal::CommandContext& ctx) {
+        if (ctx.argc != 2) {
+            terminalError(ctx, F("<hostname>"));
+            return;
+        }
 
-    terminalRegisterCommand(F("RESET.SAFE"), [](const terminal::CommandContext&) {
-        systemStabilityCounter(SYSTEM_CHECK_MAX);
-        terminalOK();
-        deferredReset(100, CUSTOM_RESET_TERMINAL);
-    });
-
-    terminalRegisterCommand(F("UPTIME"), [](const terminal::CommandContext&) {
-        infoUptime();
-        terminalOK();
-    });
-
-    #if SECURE_CLIENT == SECURE_CLIENT_BEARSSL
-        terminalRegisterCommand(F("MFLN.PROBE"), [](const terminal::CommandContext& ctx) {
-            if (ctx.argc != 3) {
-                terminalError(F("[url] [value]"));
+        dns::start(String(ctx.argv[1]), [&](const char* name, const ip_addr_t* addr, void*) {
+            if (!addr) {
+                ctx.output.printf_P(PSTR("%s not found\n"), name);
                 return;
             }
 
-            URL _url(ctx.argv[1]);
-            uint16_t requested_mfln = atol(ctx.argv[2].c_str());
-
-            auto client = std::make_unique<BearSSL::WiFiClientSecure>();
-            client->setInsecure();
-
-            if (client->probeMaxFragmentLength(_url.host.c_str(), _url.port, requested_mfln)) {
-                terminalOK();
-            } else {
-                terminalError(F("Buffer size not supported"));
-            }
-        });
-    #endif
-
-    #if LWIP_VERSION_MAJOR != 1
-        terminalRegisterCommand(F("HOST"), [](const terminal::CommandContext& ctx) {
-            if (ctx.argc != 2) {
-                terminalError(F("HOST [hostname]"));
-                return;
-            }
-
-            ip_addr_t result;
-            auto error = dns_gethostbyname(ctx.argv[1].c_str(), &result, _terminalDnsFound, nullptr);
-            if (error == ERR_OK) {
-                _terminalPrintDnsResult(ctx.argv[1].c_str(), &result);
-                terminalOK();
-                return;
-            } else if (error != ERR_INPROGRESS) {
-                DEBUG_MSG_P(PSTR("[DNS] dns_gethostbyname error: %s\n"), lwip_strerr(error));
-                return;
-            }
-
+            ctx.output.printf_P(PSTR("%s has address %s\n"),
+                name, IPAddress(addr).toString().c_str());
         });
 
-        terminalRegisterCommand(F("NETSTAT"), [](const terminal::CommandContext&) {
-            _terminalPrintTcpPcbs();
-        });
+        while (dns::started()) {
+            delay(100);
+        }
+    });
 
-    #endif // LWIP_VERSION_MAJOR != 1
+    terminalRegisterCommand(F("NETSTAT"), [](const terminal::CommandContext& ctx) {
+        auto print = [](Print& out, tcp_pcb* list) {
+            for (tcp_pcb* pcb = list; pcb != nullptr; pcb = pcb->next) {
+                out.printf_P(PSTR("state %s local %s:%hu remote %s:%hu\n"),
+                        tcp_debug_state_str(pcb->state),
+                        IPAddress(pcb->local_ip).toString().c_str(),
+                        pcb->local_port,
+                        IPAddress(pcb->remote_ip).toString().c_str(),
+                        pcb->remote_port);
+            }
+        };
 
+        print(ctx.output, tcp_active_pcbs);
+        print(ctx.output, tcp_tw_pcbs);
+        print(ctx.output, tcp_bound_pcbs);
+    });
 }
 
 void _terminalLoop() {
 
-    #if DEBUG_SERIAL_SUPPORT
-        while (DEBUG_PORT.available()) {
-            _io.inject(DEBUG_PORT.read());
-        }
-    #endif
+#if DEBUG_SERIAL_SUPPORT
+    while (DEBUG_PORT.available()) {
+        _io.inject(DEBUG_PORT.read());
+    }
+#endif
 
     _terminal.process([](terminal::Terminal::Result result) {
         bool out = false;
@@ -450,54 +612,6 @@ void _terminalLoop() {
     #endif // SERIAL_RX_ENABLED
 
 }
-
-#if WEB_SUPPORT && TERMINAL_WEB_API_SUPPORT
-
-bool _terminalWebApiMatchPath(AsyncWebServerRequest* request) {
-    const String api_path = getSetting("termWebApiPath", TERMINAL_WEB_API_PATH);
-    return request->url().equals(api_path);
-}
-
-void _terminalWebApiSetup() {
-
-    webRequestRegister([](AsyncWebServerRequest* request) {
-        // continue to the next handler if path does not match
-        if (!_terminalWebApiMatchPath(request)) return false;
-
-        // return 'true' after this point, since we did handle the request
-        webLog(request);
-        if (!apiAuthenticate(request)) return true;
-
-        auto* cmd_param = request->getParam("line", (request->method() == HTTP_PUT));
-        if (!cmd_param) {
-            request->send(500);
-            return true;
-        }
-
-        auto cmd = cmd_param->value();
-        if (!cmd.length()) {
-            request->send(500);
-            return true;
-        }
-
-        if (!cmd.endsWith("\r\n") && !cmd.endsWith("\n")) {
-            cmd += '\n';
-        }
-
-        // TODO: batch requests? processLine() -> process(...)
-        AsyncWebPrint::scheduleFromRequest(request, [cmd](Print& print) {
-            StreamAdapter<const char*> stream(print, cmd.c_str(), cmd.c_str() + cmd.length() + 1);
-            terminal::Terminal handler(stream);
-            handler.processLine();
-        });
-
-        return true;
-    });
-
-}
-
-#endif // WEB_SUPPORT && TERMINAL_WEB_API_SUPPORT
-
 
 #if MQTT_SUPPORT && TERMINAL_MQTT_SUPPORT
 
@@ -551,38 +665,124 @@ void _terminalMqttSetup() {
 
 #endif // MQTT_SUPPORT && TERMINAL_MQTT_SUPPORT
 
-}
+} // namespace
 
 // -----------------------------------------------------------------------------
 // Pubic API
 // -----------------------------------------------------------------------------
 
-Stream & terminalDefaultStream() {
+#if TERMINAL_WEB_API_SUPPORT
+
+// XXX: new `apiRegister()` depends that `webServer()` is available, meaning we can't call this setup func
+// before the `webSetup()` is called. ATM, just make sure it is in order.
+
+void terminalWebApiSetup() {
+#if API_SUPPORT
+    apiRegister(getSetting("termWebApiPath", TERMINAL_WEB_API_PATH),
+        [](ApiRequest& api) {
+            api.handle([](AsyncWebServerRequest* request) {
+                AsyncResponseStream *response = request->beginResponseStream("text/plain");
+                for (auto* name : _terminal.names()) {
+                    response->print(name);
+                    response->print("\r\n");
+                }
+
+                request->send(response);
+            });
+            return true;
+        },
+        [](ApiRequest& api) {
+            // TODO: since HTTP spec allows query string to contain repeating keys, allow iteration
+            // over every received 'line' to provide a way to call multiple commands at once
+            auto cmd = api.param(F("line"));
+            if (!cmd.length()) {
+                return false;
+            }
+
+            if (!cmd.endsWith("\r\n") && !cmd.endsWith("\n")) {
+                cmd += '\n';
+            }
+
+            api.handle([&](AsyncWebServerRequest* request) {
+                AsyncWebPrint::scheduleFromRequest(request, [cmd](Print& print) {
+                    StreamAdapter<const char*> stream(print, cmd.c_str(), cmd.c_str() + cmd.length() + 1);
+                    terminal::Terminal handler(stream);
+                    handler.processLine();
+                });
+            });
+
+            return true;
+        }
+    );
+#else
+    webRequestRegister([](AsyncWebServerRequest* request) {
+        String path(F(API_BASE_PATH));
+        path += getSetting("termWebApiPath", TERMINAL_WEB_API_PATH);
+        if (path != request->url()) {
+            return false;
+        }
+
+        if (!apiAuthenticate(request)) {
+            request->send(403);
+            return true;
+        }
+
+        auto* cmd_param = request->getParam("line", (request->method() == HTTP_PUT));
+        if (!cmd_param) {
+            request->send(500);
+            return true;
+        }
+
+        auto cmd = cmd_param->value();
+        if (!cmd.length()) {
+            request->send(500);
+            return true;
+        }
+
+        if (!cmd.endsWith("\r\n") && !cmd.endsWith("\n")) {
+            cmd += '\n';
+        }
+
+        // TODO: batch requests? processLine() -> process(...)
+        AsyncWebPrint::scheduleFromRequest(request, [cmd](Print& print) {
+            StreamAdapter<const char*> stream(print, cmd.c_str(), cmd.c_str() + cmd.length() + 1);
+            terminal::Terminal handler(stream);
+            handler.processLine();
+        });
+
+        return true;
+    });
+#endif // API_SUPPORT
+}
+
+#endif // TERMINAL_WEB_API_SUPPORT
+
+Stream& terminalDefaultStream() {
     return (Stream &) _io;
 }
 
 size_t terminalCapacity() {
-    return _io.capacity();
+    return Io::capacity();
 }
 
-void terminalInject(void *data, size_t len) {
-    _io.inject((char *) data, len);
+void terminalInject(const char* data, size_t len) {
+    _io.inject(data, len);
 }
 
 void terminalInject(char ch) {
     _io.inject(ch);
 }
 
-void terminalRegisterCommand(const String& name, terminal::Terminal::CommandFunc func) {
+void terminalRegisterCommand(const __FlashStringHelper* name, terminal::Terminal::CommandFunc func) {
     terminal::Terminal::addCommand(name, func);
 };
 
 void terminalOK(Print& print) {
-    print.print(F("+OK\n"));
+    print.print(F("OK\n"));
 }
 
 void terminalError(Print& print, const String& error) {
-    print.printf("-ERROR: %s\n", error.c_str());
+    print.printf_P(PSTR("-ERROR: %s\n"), error.c_str());
 }
 
 void terminalOK(const terminal::CommandContext& ctx) {
@@ -609,11 +809,6 @@ void terminalSetup() {
             .onVisible([](JsonObject& root) { root["cmdVisible"] = 1; });
     #endif
 
-    // Run terminal command and send back the result. Depends on the terminal command using ctx.output
-    #if WEB_SUPPORT && TERMINAL_WEB_API_SUPPORT
-        _terminalWebApiSetup();
-    #endif
-
     // Similar to the above, but we allow only very small and in-place outputs.
     #if MQTT_SUPPORT && TERMINAL_MQTT_SUPPORT
         _terminalMqttSetup();
@@ -631,5 +826,5 @@ void terminalSetup() {
 
 }
 
-#endif // TERMINAL_SUPPORT 
+#endif // TERMINAL_SUPPORT
 

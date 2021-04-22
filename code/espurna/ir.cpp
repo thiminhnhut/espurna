@@ -50,6 +50,12 @@ Raw messages:
 
 #if IR_SUPPORT
 
+#include <IRremoteESP8266.h>
+#include <IRrecv.h>
+#include <IRsend.h>
+
+#include "ir_button.h"
+
 #include "light.h"
 #include "mqtt.h"
 #include "relay.h"
@@ -67,9 +73,9 @@ Raw messages:
         uint8_t _ir_repeat_size = 0;   // size of repeat array
         uint16_t * _ir_raw;            // array for sending codes and repeat codes
     #else
-        uint8_t _ir_type = 0;          // Type of encoding
-        uint64_t _ir_code = 0;         // Code to transmit
-        uint16_t _ir_bits = 0;         // Code bits
+        decode_type_t _ir_type = UNUSED;    // Type of encoding
+        uint64_t _ir_code = 0;              // Code to transmit
+        uint16_t _ir_bits = 0;              // Code bits
     #endif
 
     uint8_t _ir_repeat = 0;            // count of times repeating of repeat_code
@@ -208,7 +214,7 @@ void _irMqttCallback(unsigned int type, const char * topic, const char * payload
 
                 if (col > 0) {
 
-                    _ir_type = data.toInt();
+                    _ir_type = static_cast<decode_type_t>(data.toInt());
                     _ir_code = strtoul(data.substring(col+1).c_str(), NULL, 10);
 
                     col = data.indexOf(":", col+1);
@@ -301,13 +307,13 @@ void _irProcess(unsigned char type, unsigned long code) {
 
                     case IR_BUTTON_ACTION_BRIGHTER:
                         lightBrightnessStep(button_value ? 1 : -1);
-                        lightUpdate(true, true);
+                        lightUpdate();
                         nice_delay(150); //debounce
                         break;
 
                     case IR_BUTTON_ACTION_RGB:
                         lightColor(button_value);
-                        lightUpdate(true, true);
+                        lightUpdate();
                         break;
 
                 /*

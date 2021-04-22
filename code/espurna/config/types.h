@@ -6,34 +6,38 @@
 #pragma once
 
 // -----------------------------------------------------------------------------
-// WIFI
+// GPIO
 // -----------------------------------------------------------------------------
 
-#define WIFI_STATE_AP               1
-#define WIFI_STATE_STA              2
-#define WIFI_STATE_AP_STA           3
-#define WIFI_STATE_WPS              4
-#define WIFI_STATE_SMARTCONFIG      8
+#define GPIO_NONE           0x99
+
+#define GPIO_TYPE_NONE          GpioType::None
+#define GPIO_TYPE_HARDWARE      GpioType::Hardware
+#define GPIO_TYPE_MCP23S08      GpioType::Mcp23s08
 
 //------------------------------------------------------------------------------
 // BUTTONS
 //------------------------------------------------------------------------------
 
-// button actions, limited to 4-bit number (0b1111 / 0xf / 15)
-#define BUTTON_ACTION_NONE            0u
-#define BUTTON_ACTION_TOGGLE          1u
-#define BUTTON_ACTION_ON              2u
-#define BUTTON_ACTION_OFF             3u
-#define BUTTON_ACTION_AP              4u
-#define BUTTON_ACTION_RESET           5u
-#define BUTTON_ACTION_PULSE           6u
-#define BUTTON_ACTION_FACTORY         7u
-#define BUTTON_ACTION_WPS             8u
-#define BUTTON_ACTION_SMART_CONFIG    9u
-#define BUTTON_ACTION_DIM_UP          10u
-#define BUTTON_ACTION_DIM_DOWN        11u
-#define BUTTON_ACTION_DISPLAY_ON      12u
-#define BUTTON_ACTION_MAX             15u
+#define BUTTON_ACTION_NONE            ButtonAction::None
+#define BUTTON_ACTION_TOGGLE          ButtonAction::Toggle
+#define BUTTON_ACTION_ON              ButtonAction::On
+#define BUTTON_ACTION_OFF             ButtonAction::Off
+#define BUTTON_ACTION_AP              ButtonAction::AccessPoint
+#define BUTTON_ACTION_RESET           ButtonAction::Reset
+#define BUTTON_ACTION_PULSE           ButtonAction::Pulse
+#define BUTTON_ACTION_FACTORY         ButtonAction::FactoryReset
+#define BUTTON_ACTION_WPS             ButtonAction::Wps
+#define BUTTON_ACTION_SMART_CONFIG    ButtonAction::SmartConfig
+#define BUTTON_ACTION_DIM_UP          ButtonAction::BrightnessIncrease
+#define BUTTON_ACTION_DIM_DOWN        ButtonAction::BrightnessDecrease
+#define BUTTON_ACTION_DISPLAY_ON      ButtonAction::DisplayOn
+#define BUTTON_ACTION_CUSTOM          ButtonAction::Custom
+#define BUTTON_ACTION_FAN_LOW         ButtonAction::FanLow
+#define BUTTON_ACTION_FAN_MEDIUM      ButtonAction::FanMedium
+#define BUTTON_ACTION_FAN_HIGH        ButtonAction::FanHigh
+
+#define BUTTON_ACTION_MAX             ButtonsActionMax
 
 // Deprecated: legacy mapping, changed to action from above
 #define BUTTON_MODE_NONE              BUTTON_ACTION_NONE
@@ -53,15 +57,16 @@
 // compat definitions for DebounceEvent
 #define BUTTON_PUSHBUTTON           ButtonMask::Pushbutton
 #define BUTTON_SWITCH               ButtonMask::Switch
+#define BUTTON_DEFAULT_LOW          ButtonMask::DefaultLow
 #define BUTTON_DEFAULT_HIGH         ButtonMask::DefaultHigh
+#define BUTTON_DEFAULT_BOOT         ButtonMask::DefaultBoot
 #define BUTTON_SET_PULLUP           ButtonMask::SetPullup
 #define BUTTON_SET_PULLDOWN         ButtonMask::SetPulldown
 
-// configure which type of event emitter is used
-#define BUTTON_EVENTS_SOURCE_GENERIC               0
-#define BUTTON_EVENTS_SOURCE_ITEAD_SONOFF_DUAL     1
-#define BUTTON_EVENTS_SOURCE_FOXEL_LIGHTFOX_DUAL   2
-#define BUTTON_EVENTS_SOURCE_MCP23S08              3
+// configure where do we get the button events
+#define BUTTON_PROVIDER_NONE        ButtonProvider::None
+#define BUTTON_PROVIDER_GPIO        ButtonProvider::Gpio
+#define BUTTON_PROVIDER_ANALOG      ButtonProvider::Analog
 
 //------------------------------------------------------------------------------
 // ENCODER
@@ -74,6 +79,8 @@
 // RELAY
 //------------------------------------------------------------------------------
 
+#define RELAY_NONE          0x99
+
 #define RELAY_BOOT_OFF              0
 #define RELAY_BOOT_ON               1
 #define RELAY_BOOT_SAME             2
@@ -81,10 +88,10 @@
 #define RELAY_BOOT_LOCKED_OFF       4
 #define RELAY_BOOT_LOCKED_ON        5
 
-#define RELAY_TYPE_NORMAL           0
-#define RELAY_TYPE_INVERSE          1
-#define RELAY_TYPE_LATCHED          2
-#define RELAY_TYPE_LATCHED_INVERSE  3
+#define RELAY_TYPE_NORMAL           RelayType::Normal
+#define RELAY_TYPE_INVERSE          RelayType::Inverse
+#define RELAY_TYPE_LATCHED          RelayType::Latched
+#define RELAY_TYPE_LATCHED_INVERSE  RelayType::LatchedInverse
 
 #define RELAY_SYNC_ANY              0
 #define RELAY_SYNC_NONE_OR_ONE      1
@@ -92,24 +99,32 @@
 #define RELAY_SYNC_SAME             3
 #define RELAY_SYNC_FIRST            4
 
-#define RELAY_PULSE_NONE            0
-#define RELAY_PULSE_OFF             1
-#define RELAY_PULSE_ON              2
+#define RELAY_PULSE_NONE            RelayPulse::None
+#define RELAY_PULSE_OFF             RelayPulse::Off
+#define RELAY_PULSE_ON              RelayPulse::On
 
-#define RELAY_PROVIDER_RELAY        0
-#define RELAY_PROVIDER_DUAL         1
-#define RELAY_PROVIDER_LIGHT        2
-#define RELAY_PROVIDER_RFBRIDGE     3
-#define RELAY_PROVIDER_STM          4
-#define RELAY_PROVIDER_MCP23S08     5
+#define RELAY_PROVIDER_NONE         RelayProvider::None
+#define RELAY_PROVIDER_DUMMY        RelayProvider::Dummy
+#define RELAY_PROVIDER_GPIO         RelayProvider::Gpio
+#define RELAY_PROVIDER_DUAL         RelayProvider::Dual
+#define RELAY_PROVIDER_STM          RelayProvider::Stm
 
-#define RELAY_GROUP_SYNC_NORMAL      0
-#define RELAY_GROUP_SYNC_INVERSE     1
-#define RELAY_GROUP_SYNC_RECEIVEONLY 2
+#define RFB_PROVIDER_RCSWITCH       0
+#define RFB_PROVIDER_EFM8BB1        1
 
-#define RELAY_LOCK_DISABLED          0
-#define RELAY_LOCK_OFF               1
-#define RELAY_LOCK_ON                2
+#define RELAY_MQTT_TOPIC_NORMAL       RelayMqttTopicMode::Normal
+#define RELAY_MQTT_TOPIC_INVERSE      RelayMqttTopicMode::Inverse
+#define RELAY_MQTT_TOPIC_RECEIVE_ONLY RelayMqttTopicMode::ReceiveOnly
+
+#define RELAY_MQTT_DISCONNECT_NONE    PayloadStatus::Unknown
+#define RELAY_MQTT_DISCONNECT_ON      PayloadStatus::On
+#define RELAY_MQTT_DISCONNECT_OFF     PayloadStatus::Off
+#define RELAY_MQTT_DISCONNECT_TOGGLE  PayloadStatus::Toggle
+
+#define RELAY_LOCK_DISABLED          RelayLock::None
+#define RELAY_LOCK_NONE              RelayLock::None
+#define RELAY_LOCK_OFF               RelayLock::Off
+#define RELAY_LOCK_ON                RelayLock::On
 
 //------------------------------------------------------------------------------
 // UDP SYSLOG
@@ -148,6 +163,14 @@
 #define SYSLOG_LOCAL7      (23<<3) /* reserved for local use */
 
 //------------------------------------------------------------------------------
+// Heartbeat
+//------------------------------------------------------------------------------
+
+#define HEARTBEAT_NONE      heartbeat::Mode::None
+#define HEARTBEAT_ONCE      heartbeat::Mode::Once
+#define HEARTBEAT_REPEAT    heartbeat::Mode::Repeat
+
+//------------------------------------------------------------------------------
 // MQTT
 //------------------------------------------------------------------------------
 
@@ -166,16 +189,16 @@
 // LED
 //------------------------------------------------------------------------------
 
-#define LED_MODE_MANUAL             0       // LED will be managed manually (OFF by default)
-#define LED_MODE_WIFI               1       // LED will blink according to the WIFI status
-#define LED_MODE_FOLLOW             2       // LED will follow state of linked LED#_RELAY relay ID
-#define LED_MODE_FOLLOW_INVERSE     3       // LED will follow the opposite state of linked LED#_RELAY relay ID
-#define LED_MODE_FINDME             4       // LED will be ON if all relays are OFF
-#define LED_MODE_FINDME_WIFI        5       // A mixture between WIFI and FINDME
-#define LED_MODE_ON                 6       // LED always ON
-#define LED_MODE_OFF                7       // LED always OFF
-#define LED_MODE_RELAY              8       // If any relay is ON, LED will be ON, otherwise OFF
-#define LED_MODE_RELAY_WIFI         9       // A mixture between WIFI and RELAY, the reverse of MIXED
+#define LED_MODE_MANUAL             LedMode::Manual         // LED will be managed manually (OFF by default)
+#define LED_MODE_WIFI               LedMode::WiFi           // LED will blink according to the WIFI status
+#define LED_MODE_FOLLOW             LedMode::Follow         // LED will follow state of linked LED#_RELAY relay ID
+#define LED_MODE_FOLLOW_INVERSE     LedMode::FollowInverse  // LED will follow the opposite state of linked LED#_RELAY relay ID
+#define LED_MODE_FINDME             LedMode::FindMe         // LED will be ON if all relays are OFF
+#define LED_MODE_FINDME_WIFI        LedMode::FindMeWiFi     // A mixture between WIFI and FINDME
+#define LED_MODE_ON                 LedMode::On             // LED always ON
+#define LED_MODE_OFF                LedMode::Off            // LED always OFF
+#define LED_MODE_RELAY              LedMode::Relay          // If any relay is ON, LED will be ON, otherwise OFF
+#define LED_MODE_RELAY_WIFI         LedMode::RelayWiFi      // A mixture between WIFI and RELAY, the reverse of MIXED
 
 // -----------------------------------------------------------------------------
 // UI
@@ -196,7 +219,7 @@
 #define LIGHT_PROVIDER_NONE         0
 #define LIGHT_PROVIDER_MY92XX       1       // works with MY9291 and MY9231
 #define LIGHT_PROVIDER_DIMMER       2
-#define LIGHT_PROVIDER_TUYA         3
+#define LIGHT_PROVIDER_CUSTOM       3
 
 // -----------------------------------------------------------------------------
 // SCHEDULER
@@ -233,23 +256,6 @@
 #define LIGHT_EFFECT_SMOOTH         4
 
 //------------------------------------------------------------------------------
-// RESET
-//------------------------------------------------------------------------------
-
-#define CUSTOM_RESET_HARDWARE       1       // Reset from hardware button
-#define CUSTOM_RESET_WEB            2       // Reset from web interface
-#define CUSTOM_RESET_TERMINAL       3       // Reset from terminal
-#define CUSTOM_RESET_MQTT           4       // Reset via MQTT
-#define CUSTOM_RESET_RPC            5       // Reset via RPC (HTTP)
-#define CUSTOM_RESET_OTA            6       // Reset after successful OTA update
-#define CUSTOM_RESET_HTTP           7       // Reset via HTTP GET
-#define CUSTOM_RESET_NOFUSS         8       // Reset after successful NOFUSS update
-#define CUSTOM_RESET_UPGRADE        9       // Reset after update from web interface
-#define CUSTOM_RESET_FACTORY        10      // Factory reset from terminal
-
-#define CUSTOM_RESET_MAX            10
-
-//------------------------------------------------------------------------------
 // ENVIRONMENTAL
 //------------------------------------------------------------------------------
 
@@ -272,20 +278,6 @@
                                             // Take extra precautions because unprotected skin and eyes will be damaged and can burn quickly.
 #define UV_INDEX_EXTREME            4       // 11 or more means extreme risk of harm from unprotected sun exposure.
                                             // Take all precautions because unprotected skin and eyes can burn in minutes.
-
-//------------------------------------------------------------------------------
-// UNITS
-//------------------------------------------------------------------------------
-
-#define POWER_WATTS                 sensor::Unit::Watt
-#define POWER_KILOWATTS             sensor::Unit::Kilowatt
-
-#define ENERGY_JOULES               sensor::Unit::Joule
-#define ENERGY_KWH                  sensor::Unit::KilowattHour
-
-#define TMP_CELSIUS                 sensor::Unit::Celcius
-#define TMP_FAHRENHEIT              sensor::Unit::Farenheit
-#define TMP_KELVIN                  sensor::Unit::Kelvin
 
 //--------------------------------------------------------------------------------
 // Sensor ID
@@ -419,10 +411,3 @@
 #define SECURE_CLIENT_CHECK_NONE          0 // !!! INSECURE CONNECTION !!!
 #define SECURE_CLIENT_CHECK_FINGERPRINT   1 // legacy fingerprint validation
 #define SECURE_CLIENT_CHECK_CA            2 // set trust anchor from PROGMEM CA certificate
-
-// -----------------------------------------------------------------------------
-// Hardware default values
-// -----------------------------------------------------------------------------
-
-#define GPIO_NONE           0x99
-#define RELAY_NONE          0x99

@@ -14,18 +14,16 @@ Copyright (C) 2020 by Maxim Prokhorov <prokhorov dot max at outlook dot com>
 #include "system.h"
 #include "utils.h"
 
-BrokerBind(StatusBroker);
-
 bool rpcHandleAction(const String& action) {
     bool result = false;
     if (action.equals("reboot")) {
         result = true;
         schedule_function([]() {
-            deferredReset(100, CUSTOM_RESET_RPC);
+            deferredReset(100, CustomResetReason::Rpc);
         });
     } else if (action.equals("heartbeat")) {
         result = true;
-        schedule_function(heartbeat);
+        systemScheduleHeartbeat();
     }
     return result;
 }

@@ -11,10 +11,22 @@ Copyright (C) 2017 by Dmitry Blinov <dblinov76 at gmail dot com>
 #if THERMOSTAT_SUPPORT
 
 #include "ntp.h"
+#include "ntp_timelib.h"
 #include "relay.h"
 #include "sensor.h"
 #include "mqtt.h"
 #include "ws.h"
+
+#include <ArduinoJson.h>
+
+#if THERMOSTAT_DISPLAY_SUPPORT
+// alias for `#include "SSD1306Wire.h"`
+#include <SSD1306.h>
+#endif
+
+#include <limits>
+#include <cmath>
+#include <cfloat>
 
 const char* NAME_THERMOSTAT_ENABLED     = "thermostatEnabled";
 const char* NAME_THERMOSTAT_MODE        = "thermostatMode";
@@ -142,7 +154,25 @@ void updateOperationMode() {
 //------------------------------------------------------------------------------
 // MQTT
 //------------------------------------------------------------------------------
-void thermostatMQTTCallback(unsigned int type, const char * topic, const char * payload) {
+
+bool _thermostatMqttHeartbeat(heartbeat::Mask mask) {
+    if (mask & heartbeat::Report::Range) {
+        const auto& range = thermostatRange();
+        mqttSend(MQTT_TOPIC_HOLD_TEMP "_" MQTT_TOPIC_HOLD_TEMP_MIN, String(range.min).c_str());
+        mqttSend(MQTT_TOPIC_HOLD_TEMP "_" MQTT_TOPIC_HOLD_TEMP_MAX, String(range.max).c_str());
+    }
+
+    if (mask & heartbeat::Report::RemoteTemp) {
+        const auto& remote_temp = thermostatRemoteTemp();
+        char buffer[16];
+        dtostrf(remote_temp.temp, 1, 1, buffer);
+        mqttSend(MQTT_TOPIC_REMOTE_TEMP, buffer);
+    }
+
+    return mqttConnected();
+}
+
+void thermostatMqttCallback(unsigned int type, const char * topic, const char * payload) {
 
     if (type == MQTT_CONNECT_EVENT) {
       mqttSubscribeRaw(thermostat_remote_sensor_topic.c_str());
@@ -371,35 +401,28 @@ void updateCounters() {
 }
 
 //------------------------------------------------------------------------------
-double getLocalTemperature() {
-  #if SENSOR_SUPPORT
-      for (byte i=0; i<magnitudeCount(); i++) {
-          if (magnitudeType(i) == MAGNITUDE_TEMPERATURE) {
-              double temp = magnitudeValue(i);
-              char tmp_str[16];
-              dtostrf(temp, 1, 1, tmp_str);
-              DEBUG_MSG_P(PSTR("[THERMOSTAT] getLocalTemperature temp: %s\n"), tmp_str);
-              return temp > -0.1 && temp < 0.1 ? DBL_MIN : temp;
-          }
-      }
-  #endif
-  return DBL_MIN;
+double _getLocalValue(const char* description, unsigned char type) {
+#if SENSOR_SUPPORT
+    for (unsigned char index = 0; index < magnitudeCount(); ++index) {
+        if (magnitudeType(index) != type) continue;
+        auto value = magnitudeValue(index);
+
+        char tmp_str[16];
+        magnitudeFormat(value, tmp_str, sizeof(tmp_str));
+        DEBUG_MSG_P(PSTR("[THERMOSTAT] %s: %s\n"), description, tmp_str);
+
+        return value.get();
+    }
+#endif
+  return std::numeric_limits<double>::quiet_NaN();
 }
 
-//------------------------------------------------------------------------------
+double getLocalTemperature() {
+    return _getLocalValue("getLocalTemperature", MAGNITUDE_TEMPERATURE);
+}
+
 double getLocalHumidity() {
-  #if SENSOR_SUPPORT
-      for (byte i=0; i<magnitudeCount(); i++) {
-          if (magnitudeType(i) == MAGNITUDE_HUMIDITY) {
-              double hum = magnitudeValue(i);
-              char tmp_str[16];
-              dtostrf(hum, 1, 0, tmp_str);
-              DEBUG_MSG_P(PSTR("[THERMOSTAT] getLocalHumidity hum: %s\%\n"), tmp_str);
-              return hum > -0.1 && hum < 0.1 ? DBL_MIN : hum;
-          }
-      }
-  #endif
-  return DBL_MIN;
+    return _getLocalValue("getLocalHumidity", MAGNITUDE_HUMIDITY);
 }
 
 //------------------------------------------------------------------------------
@@ -428,7 +451,7 @@ void thermostatLoop(void) {
       _thermostat.temperature_source = temp_remote;
       DEBUG_MSG_P(PSTR("[THERMOSTAT] setup thermostat by remote temperature\n"));
       checkTempAndAdjustRelay(_remote_temp.temp);
-    } else if (getLocalTemperature() != DBL_MIN) {
+    } else if (!std::isnan(getLocalTemperature())) {
       // we have local temp
       _thermostat.temperature_source = temp_local;
       DEBUG_MSG_P(PSTR("[THERMOSTAT] setup thermostat by local temperature\n"));
@@ -452,11 +475,11 @@ void thermostatLoop(void) {
 
 //------------------------------------------------------------------------------
 String getBurnTimeStr(unsigned int burn_time) {
-  char burnTimeStr[18] = { 0 };
+  char burnTimeStr[24] = { 0 };
   if (burn_time < 60) {
     sprintf(burnTimeStr, "%d мин.", burn_time);
   } else {
-    sprintf(burnTimeStr, "%d ч. %d мин.", (int)floor(burn_time / 60), burn_time % 60);
+    sprintf(burnTimeStr, "%d ч. %d мин.", (int)floor(burn_time / 60), (int)(burn_time % 60));
   }
   return String(burnTimeStr);
 }
@@ -602,7 +625,7 @@ void display_local_temp() {
   String local_temp_title = String("Local      t");
   display.drawString(0, 32, local_temp_title);
 
-  String local_temp_vol = String("= ") + (getLocalTemperature() != DBL_MIN ? String(getLocalTemperature(), 1) : String("?")) + "°";
+  String local_temp_vol = String("= ") + (!std::isnan(getLocalTemperature()) ? String(getLocalTemperature(), 1) : String("?")) + "°";
   display.drawString(75, 32, local_temp_vol);
 
   _display_need_refresh = true;
@@ -619,7 +642,7 @@ void display_local_humidity() {
   String local_hum_title = String("Local      h ");
   display.drawString(0, 48, local_hum_title);
 
-  String local_hum_vol = String("= ") + (getLocalHumidity() != DBL_MIN ? String(getLocalHumidity(), 0) : String("?")) + "%";
+  String local_hum_vol = String("= ") + (!std::isnan(getLocalHumidity()) ? String(getLocalHumidity(), 0) : String("?")) + "%";
   display.drawString(75, 48, local_hum_vol);
 
   _display_need_refresh = true;
@@ -803,9 +826,8 @@ void thermostatSetup() {
   _thermostat_burn_day        = getSetting(NAME_BURN_DAY, 0);
   _thermostat_burn_month      = getSetting(NAME_BURN_MONTH, 0);
 
-  #if MQTT_SUPPORT
-    mqttRegister(thermostatMQTTCallback);
-  #endif
+  mqttHeartbeat(_thermostatMqttHeartbeat);
+  mqttRegister(thermostatMqttCallback);
 
   // Websockets
   #if WEB_SUPPORT

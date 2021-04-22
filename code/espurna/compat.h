@@ -9,6 +9,16 @@ COMPATIBILITY BETWEEN 2.3.0 and latest versions
 #include "espurna.h"
 
 // -----------------------------------------------------------------------------
+
+inline constexpr bool isEspurnaCore() {
+#if defined(ESPURNA_CORE) || defined(ESPURNA_CORE_WEBUI)
+    return true;
+#else
+    return false;
+#endif
+}
+
+// -----------------------------------------------------------------------------
 // Core version 2.4.2 and higher changed the cont_t structure to a pointer:
 // https://github.com/esp8266/Arduino/commit/5d5ea92a4d004ab009d5f642629946a0cb8893dd#diff-3fa12668b289ccb95b7ab334833a4ba8L35
 // Core version 2.5.0 introduced EspClass helper method:
@@ -97,19 +107,33 @@ using std::isnan;
 #endif
 
 // -----------------------------------------------------------------------------
-// std::make_unique backport for C++11, since we still use it
+// std::make_unique & std::clamp backports for C++11, since we still use it
 // -----------------------------------------------------------------------------
-#if 201103L >= __cplusplus
+#if __cplusplus <= 201103L
 
 #include <memory>
 namespace std {
-    template<typename T, typename... Args>
-    std::unique_ptr<T> make_unique(Args&&... args) {
-        return std::unique_ptr<T>(new T(std::forward<Args>(args)...));
-    }
+
+template<typename T, typename... Args>
+std::unique_ptr<T> make_unique(Args&&... args) {
+    return std::unique_ptr<T>(new T(std::forward<Args>(args)...));
 }
+
+template <typename T>
+constexpr const T& clamp(const T& value, const T& low, const T& high) {
+    return (value < low) ? low : (high < value) ? high : value;
+}
+
+} // namespace std
 
 #endif
 
-#define UNUSED(x) (void)(x)
+// -----------------------------------------------------------------------------
+// Make sure all INPUT modes are available to the source
+// (even if those do nothing)
+// -----------------------------------------------------------------------------
+// TODO: esp8266/Arduino issue
 
+#if defined(ESP8266) and not defined(INPUT_PULLDOWN)
+#define INPUT_PULLDOWN 0x3
+#endif

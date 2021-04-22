@@ -1,5 +1,5 @@
 /*
- 
+
   Original code:
 
   Debounce buttons and trigger events
@@ -52,7 +52,8 @@ namespace types {
 
     enum class PinValue {
         Low,
-        High
+        High,
+        Initial
     };
 
     enum class PinMode {
@@ -69,12 +70,10 @@ namespace types {
 
     enum Event {
         EventNone,
-        EventChanged,
         EventPressed,
         EventReleased
     };
 
-    using Pin = std::shared_ptr<BasePin>;
     using EventHandler = std::function<void(const EventEmitter& self, types::Event event, uint8_t count, unsigned long length)>;
 
 }
@@ -83,39 +82,38 @@ class EventEmitter {
 
     public:
 
-        EventEmitter(types::Pin pin, const types::Config& config = {types::Mode::Pushbutton, types::PinValue::High, types::PinMode::Input}, unsigned long delay = DebounceDelay, unsigned long repeat = RepeatDelay);
-        EventEmitter(types::Pin pin, types::EventHandler callback, const types::Config& = {types::Mode::Pushbutton, types::PinValue::High, types::PinMode::Input}, unsigned long delay = DebounceDelay, unsigned long repeat = RepeatDelay);
+        EventEmitter(BasePinPtr&& pin, const types::Config& config = {types::Mode::Pushbutton, types::PinValue::High, types::PinMode::Input}, unsigned long delay = DebounceDelay, unsigned long repeat = RepeatDelay);
+        EventEmitter(BasePinPtr&& pin, types::EventHandler callback, const types::Config& = {types::Mode::Pushbutton, types::PinValue::High, types::PinMode::Input}, unsigned long delay = DebounceDelay, unsigned long repeat = RepeatDelay);
 
         types::Event loop();
         bool isPressed();
 
-        const types::Pin getPin() const;
-        const types::Config getConfig() const;
+        const BasePinPtr& pin() const;
+        const types::Config& config() const;
 
         unsigned long getEventLength();
         unsigned long getEventCount();
 
     private:
-
-        types::Pin _pin;
+        BasePinPtr _pin;
         types::EventHandler _callback;
 
         const types::Config _config;
 
-        const bool _is_switch;
-        const bool _default_value;
+        const bool _is_switch { false };
 
-        const unsigned long _delay;
-        const unsigned long _repeat;
+        const unsigned long _delay { 0ul };
+        const unsigned long _repeat { 0ul };
 
-        bool _value;
+        bool _default_value { true };
+        bool _value { true };
 
-        bool _ready;
-        bool _reset_count;
+        bool _ready { false };
+        bool _reset_count { true };
 
-        unsigned long _event_start;
-        unsigned long _event_length;
-        unsigned char _event_count;
+        unsigned long _event_start { 0ul };
+        unsigned long _event_length { 0ul };
+        unsigned char _event_count { 0ul };
 
 };
 

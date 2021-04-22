@@ -128,7 +128,7 @@ void _onUpgradeFile(AsyncWebServerRequest *request, String filename, size_t inde
     }
 
     if (final) {
-        otaFinalize(index + len, CUSTOM_RESET_UPGRADE, true);
+        otaFinalize(index + len, CustomResetReason::Ota, true);
     } else {
         otaProgress(index + len);
     }
@@ -136,7 +136,7 @@ void _onUpgradeFile(AsyncWebServerRequest *request, String filename, size_t inde
 }
 
 void otaWebSetup() {
-    webServer()->on("/upgrade", HTTP_POST, _onUpgrade, _onUpgradeFile);
+    webServer().on("/upgrade", HTTP_POST, _onUpgrade, _onUpgradeFile);
     wsRegister().
         onVisible([](JsonObject& root) {
             root["otaVisible"] = 1;

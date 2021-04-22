@@ -7,10 +7,6 @@
 
 #pragma once
 
-#include <Arduino.h>
-
-#include "../debug.h"
-
 #include "BaseSensor.h"
 #include "BaseAnalogSensor.h"
 
@@ -68,7 +64,7 @@ class AnalogSensor : public BaseAnalogSensor {
         // ---------------------------------------------------------------------
 
         // Initialization method, must be idempotent
-        void begin() {            
+        void begin() {
             _ready = true;
         }
 

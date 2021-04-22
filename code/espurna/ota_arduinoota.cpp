@@ -20,11 +20,10 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 void _arduinoOtaConfigure() {
 
     ArduinoOTA.setPort(OTA_PORT);
-    ArduinoOTA.setHostname(getSetting("hostname").c_str());
-    #if USE_PASSWORD
-        ArduinoOTA.setPassword(getAdminPass().c_str());
-    #endif
-    ArduinoOTA.begin();
+#if USE_PASSWORD
+    ArduinoOTA.setPassword(getAdminPass().c_str());
+#endif
+    ArduinoOTA.begin(false);
 
 }
 
@@ -42,9 +41,9 @@ void _arduinoOtaOnStart() {
 
     DEBUG_MSG_P(PSTR("[OTA] Start\n"));
 
-    #if WEB_SUPPORT
-        wsSend_P(PSTR("{\"message\": 2}"));
-    #endif
+#if WEB_SUPPORT
+    wsSend_P(PSTR("{\"message\": \"OTA update started.\"}"));
+#endif
 
 }
 
@@ -57,7 +56,7 @@ void _arduinoOtaOnEnd() {
     #endif
 
     // Note: ArduinoOTA will reset the board after this callback returns.
-    customResetReason(CUSTOM_RESET_OTA);
+    customResetReason(CustomResetReason::Ota);
     nice_delay(100);
 
 }

@@ -20,9 +20,9 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 
 struct AsyncWebPrintConfig {
     const char* const mimeType;
-    const size_t backlogCountMax;
-    const size_t backlogSizeMax;
-    const decltype(millis()) backlogTimeout;
+    size_t backlogCountMax;
+    size_t backlogSizeMax;
+    decltype(millis()) backlogTimeout;
 };
 
 struct AsyncWebPrint : public Print {
@@ -80,7 +80,7 @@ struct AsyncWebPrint : public Print {
 using web_body_callback_f = std::function<bool(AsyncWebServerRequest*, uint8_t* data, size_t len, size_t index, size_t total)>;
 using web_request_callback_f = std::function<bool(AsyncWebServerRequest*)>;
 
-AsyncWebServer* webServer();
+AsyncWebServer& webServer();
 
 bool webAuthenticate(AsyncWebServerRequest *request);
 void webLog(AsyncWebServerRequest *request);

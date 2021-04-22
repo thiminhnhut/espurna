@@ -18,8 +18,6 @@ Copyright (C) 2016-2019 by Xose Pérez <xose dot perez at gmail dot com>
 
 #include <ArduinoJson.h>
 
-BrokerBind(ConfigBroker);
-
 // -----------------------------------------------------------------------------
 
 namespace settings {
@@ -76,6 +74,16 @@ double convert(const String& value) {
 }
 
 template <>
+signed char convert(const String& value) {
+    return value.toInt();
+}
+
+template <>
+short convert(const String& value) {
+    return value.toInt();
+}
+
+template <>
 int convert(const String& value) {
     return value.toInt();
 }
@@ -87,32 +95,77 @@ long convert(const String& value) {
 
 template <>
 bool convert(const String& value) {
-    return convert<int>(value) == 1;
+    if (value.length()) {
+        if ((value == "0")
+            || (value == "n")
+            || (value == "no")
+            || (value == "false")
+            || (value == "off")) {
+            return false;
+        }
+
+        return (value == "1")
+            || (value == "y")
+            || (value == "yes")
+            || (value == "true")
+            || (value == "on");
+    }
+
+    return false;
 }
 
 template <>
-unsigned long convert(const String& value) {
+uint32_t convert(const String& value) {
     if (!value.length()) {
         return 0;
     }
 
     int base = 10;
     if (value.length() > 2) {
-        if (value.startsWith("0b")) {
-            base = 2;
-        } else if (value.startsWith("0o")) {
-            base = 8;
-        } else if (value.startsWith("0x")) {
-            base = 16;
+        auto* ptr = value.c_str();
+        if (*ptr == '0') {
+            switch (*(ptr + 1)) {
+            case 'b':
+                base = 2;
+                break;
+            case 'o':
+                base = 8;
+                break;
+            case 'x':
+                base = 16;
+                break;
+            }
         }
     }
 
     return u32fromString((base == 10) ? value : value.substring(2), base);
 }
 
+String serialize(uint32_t value, int base) {
+    constexpr size_t Size { 4 * sizeof(decltype(value)) };
+    constexpr size_t Length { Size - 1 };
+
+    String result;
+    result.reserve(Length);
+
+    if (base == 2) {
+        result += "0b";
+    } else if (base == 8) {
+        result += "0o";
+    } else if (base == 16) {
+        result += "0x";
+    }
+
+    char buffer[Size] = {0};
+    ultoa(value, buffer, base);
+    result += buffer;
+
+    return result;
+}
+
 template <>
-unsigned int convert(const String& value) {
-    return convert<unsigned long>(value);
+unsigned long convert(const String& value) {
+    return convert<unsigned int>(value);
 }
 
 template <>
@@ -129,67 +182,10 @@ unsigned char convert(const String& value) {
 } // namespace settings
 
 // -----------------------------------------------------------------------------
+// Key-value API
+// -----------------------------------------------------------------------------
 
-/*
-struct SettingsKeys {
-
-    struct iterator {
-        iterator(size_t total) :
-            total(total)
-        {}
-
-        iterator& operator++() {
-            if (total && (current_index < (total - 1))) {
-                ++current_index
-                current_value = settingsKeyName(current_index);
-                return *this;
-            }
-            return end();
-        }
-
-        iterator operator++(int) {
-            iterator val = *this;
-            ++(*this);
-            return val;
-        }
-
-        operator String() {
-            return (current_index < total) ? current_value : empty_value;
-        }
-
-        bool operator ==(iterator& const other) const {
-            return (total == other.total) && (current_index == other.current_index);
-        }
-
-        bool operator !=(iterator& const other) const {
-            return !(*this == other); 
-        }
-
-        using difference_type = size_t;
-        using value_type = size_t;
-        using pointer = const size_t*;
-        using reference = const size_t&;
-        using iterator_category = std::forward_iterator_tag;
-
-        const size_t total;
-
-        String empty_value;
-        String current_value;
-        size_t current_index = 0;
-    };
-
-    iterator begin() {
-        return iterator {total};
-    }
-
-    iterator end() {
-        return iterator {0};
-    }
-
-};
-*/
-
-// Note: we prefer things sorted via this function, not kv_store.keys() directly
+// TODO: UI needs this to avoid showing keys in storage order
 std::vector<String> settingsKeys() {
     auto keys = settings::kv_store.keys();
     std::sort(keys.begin(), keys.end(), [](const String& rhs, const String& lhs) -> bool {
@@ -215,120 +211,158 @@ String settingsQueryDefaults(const String& key) {
     return String();
 }
 
-// -----------------------------------------------------------------------------
-// Key-value API
-// -----------------------------------------------------------------------------
-
-String settings_key_t::toString() const {
-    if (_index < 0) {
-        return _value;
-    } else {
-        return _value + _index;
-    }
-}
-
-settings_move_key_t _moveKeys(const String& from, const String& to, unsigned char index) {
+settings_move_key_t _moveKeys(const String& from, const String& to, size_t index) {
     return settings_move_key_t {{from, index}, {to, index}};
 }
 
 void moveSetting(const String& from, const String& to) {
-    const auto value = getSetting(from);
-    if (value.length() > 0) setSetting(to, value);
+    auto result = settings::kv_store.get(from);
+    if (result) {
+        setSetting(to, result.ref());
+    }
     delSetting(from);
 }
 
 void moveSetting(const String& from, const String& to, unsigned char index) {
     const auto keys = _moveKeys(from, to, index);
-    const auto value = getSetting(keys.first);
-    if (value.length() > 0) setSetting(keys.second, value);
+
+    auto result = settings::kv_store.get(keys.first.value());
+    if (result) {
+        setSetting(keys.second, result.ref());
+    }
 
     delSetting(keys.first);
 }
 
 void moveSettings(const String& from, const String& to) {
-    unsigned char index = 0;
-    while (index < 100) {
+    for (size_t index = 0; index < 100; ++index) {
         const auto keys = _moveKeys(from, to, index);
-        const auto value = getSetting(keys.first);
-        if (value.length() == 0) break;
-        setSetting(keys.second, value);
+        auto result = settings::kv_store.get(keys.first.value());
+        if (!result) {
+            break;
+        }
+
+        setSetting(keys.second, result.ref());
         delSetting(keys.first);
-        ++index;
     }
 }
 
-template<>
-String getSetting(const settings_key_t& key, String defaultValue) {
-    auto result = settings::kv_store.get(key.toString());
-    if (!result) {
-        return defaultValue;
-    }
-    return result.value;
+template
+bool getSetting(const SettingsKey& key, bool defaultValue);
+
+template
+int getSetting(const SettingsKey& key, int defaultValue);
+
+template
+long getSetting(const SettingsKey& key, long defaultValue);
+
+template
+unsigned char getSetting(const SettingsKey& key, unsigned char defaultValue);
+
+template
+unsigned short getSetting(const SettingsKey& key, unsigned short defaultValue);
+
+template
+unsigned int getSetting(const SettingsKey& key, unsigned int defaultValue);
+
+template
+unsigned long getSetting(const SettingsKey& key, unsigned long defaultValue);
+
+template
+float getSetting(const SettingsKey& key, float defaultValue);
+
+template
+double getSetting(const SettingsKey& key, double defaultValue);
+
+String getSetting(const String& key) {
+    return std::move(settings::kv_store.get(key)).get();
 }
 
-template
-bool getSetting(const settings_key_t& key, bool defaultValue);
+String getSetting(const __FlashStringHelper* key) {
+    return getSetting(String(key));
+}
 
-template
-int getSetting(const settings_key_t& key, int defaultValue);
+String getSetting(const char* key) {
+    return getSetting(String(key));
+}
 
-template
-long getSetting(const settings_key_t& key, long defaultValue);
-
-template
-unsigned char getSetting(const settings_key_t& key, unsigned char defaultValue);
-
-template
-unsigned short getSetting(const settings_key_t& key, unsigned short defaultValue);
-
-template
-unsigned int getSetting(const settings_key_t& key, unsigned int defaultValue);
-
-template
-unsigned long getSetting(const settings_key_t& key, unsigned long defaultValue);
-
-template
-float getSetting(const settings_key_t& key, float defaultValue);
-
-template
-double getSetting(const settings_key_t& key, double defaultValue);
-
-String getSetting(const settings_key_t& key) {
+String getSetting(const SettingsKey& key) {
     static const String defaultValue("");
     return getSetting(key, defaultValue);
 }
 
-String getSetting(const settings_key_t& key, const char* defaultValue) {
-    return getSetting(key, String(defaultValue));
+String getSetting(const SettingsKey& key, const char* defaultValue) {
+    return getSetting(key, std::move(String(defaultValue)));
 }
 
-String getSetting(const settings_key_t& key, const __FlashStringHelper* defaultValue) {
-    return getSetting(key, String(defaultValue));
+String getSetting(const SettingsKey& key, const __FlashStringHelper* defaultValue) {
+    return getSetting(key, std::move(String(defaultValue)));
 }
 
-template<>
-bool setSetting(const settings_key_t& key, const String& value) {
-    return settings::kv_store.set(key.toString(), value);
+String getSetting(const SettingsKey& key, const String& defaultValue) {
+    auto result = settings::kv_store.get(key.value());
+    if (result) {
+        return std::move(result).get();
+    }
+
+    return defaultValue;
 }
 
-bool delSetting(const settings_key_t& key) {
-    return settings::kv_store.del(key.toString());
+String getSetting(const SettingsKey& key, String&& defaultValue) {
+    auto result = settings::kv_store.get(key.value());
+    if (result) {
+        return std::move(result).get();
+    }
+
+    return std::move(defaultValue);
 }
 
-bool hasSetting(const settings_key_t& key) {
-    return settings::kv_store.has(key.toString());
+bool delSetting(const String& key) {
+    return settings::kv_store.del(key);
+}
+
+bool delSetting(const SettingsKey& key) {
+    return delSetting(key.value());
+}
+
+bool delSetting(const char* key) {
+    return delSetting(String(key));
+}
+
+bool delSetting(const __FlashStringHelper* key) {
+    return delSetting(String(key));
+}
+
+bool hasSetting(const String& key) {
+    return settings::kv_store.has(key);
+}
+
+bool hasSetting(const SettingsKey& key) {
+    return hasSetting(key.value());
+}
+
+bool hasSetting(const char* key) {
+    return hasSetting(String(key));
+}
+
+bool hasSetting(const __FlashStringHelper* key) {
+    return hasSetting(String(key));
 }
 
 void saveSettings() {
-    #if not SETTINGS_AUTOSAVE
-        eepromCommit();
-    #endif
+#if not SETTINGS_AUTOSAVE
+    eepromCommit();
+#endif
+}
+
+void autosaveSettings() {
+#if SETTINGS_AUTOSAVE
+    eepromCommit();
+#endif
 }
 
 void resetSettings() {
-    auto* ptr = EEPROMr.getDataPtr();
-    std::fill(ptr + EepromReservedSize, ptr + EepromSize, 0xFF);
-    EEPROMr.commit();
+    eepromClear();
 }
 
 // -----------------------------------------------------------------------------
@@ -339,7 +373,7 @@ bool settingsRestoreJson(JsonObject& data) {
 
     // Note: we try to match what /config generates, expect {"app":"ESPURNA",...}
     const char* app = data["app"];
-    if (!app || strcmp(app, APP_NAME) != 0) {
+    if (!app || strcmp(app, getAppName()) != 0) {
         DEBUG_MSG_P(PSTR("[SETTING] Wrong or missing 'app' key\n"));
         return false;
     }
@@ -409,8 +443,9 @@ void settingsProcessConfig(const settings_cfg_list_t& config, settings_filter_t 
 // Initialization
 // -----------------------------------------------------------------------------
 
-void settingsSetup() {
+#if TERMINAL_SUPPORT
 
+void _settingsInitCommands() {
     terminalRegisterCommand(F("CONFIG"), [](const terminal::CommandContext& ctx) {
         // TODO: enough of a buffer?
         DynamicJsonBuffer jsonBuffer(1024);
@@ -423,15 +458,18 @@ void settingsSetup() {
     terminalRegisterCommand(F("KEYS"), [](const terminal::CommandContext& ctx) {
         auto keys = settingsKeys();
 
-        ctx.output.println(F("Current settings:"));
+        ctx.output.printf_P(PSTR("Current settings:"));
+
+        String value;
         for (unsigned int i=0; i<keys.size(); i++) {
-            const auto value = getSetting(keys[i]);
-            ctx.output.printf("> %s => \"%s\"\n", (keys[i]).c_str(), value.c_str());
+            value = getSetting(keys[i]);
+            ctx.output.printf_P(PSTR("> %s => \"%s\"\n"), (keys[i]).c_str(), value.c_str());
         }
 
         auto available [[gnu::unused]] = settings::kv_store.available();
-        ctx.output.printf("Number of keys: %u\n", keys.size());
-        ctx.output.printf("Available: %u bytes (%u%%)\n", available, (100 * available) / settings::kv_store.size());
+        ctx.output.printf_P(PSTR("Number of keys: %u\n"), keys.size());
+        ctx.output.printf_P(PSTR("Available: %u bytes (%u%%)\n"),
+                available, (100 * available) / settings::kv_store.size());
 
         terminalOK(ctx);
     });
@@ -480,35 +518,41 @@ void settingsSetup() {
             if (!result) {
                 const auto maybeDefault = settingsQueryDefaults(key);
                 if (maybeDefault.length()) {
-                    ctx.output.printf("> %s => %s (default)\n", key.c_str(), maybeDefault.c_str());
+                    ctx.output.printf_P(PSTR("> %s => %s (default)\n"), key.c_str(), maybeDefault.c_str());
                 } else {
-                    ctx.output.printf("> %s =>\n", key.c_str());
+                    ctx.output.printf_P(PSTR("> %s =>\n"), key.c_str());
                 }
                 continue;
             }
 
-            ctx.output.printf("> %s => \"%s\"\n", key.c_str(), result.value.c_str());
+            ctx.output.printf_P(PSTR("> %s => \"%s\"\n"), key.c_str(), result.c_str());
         }
 
         terminalOK(ctx);
     });
 
-    terminalRegisterCommand(F("RELOAD"), [](const terminal::CommandContext&) {
+    terminalRegisterCommand(F("RELOAD"), [](const terminal::CommandContext& ctx) {
         espurnaReload();
-        terminalOK();
+        terminalOK(ctx);
     });
 
-    terminalRegisterCommand(F("FACTORY.RESET"), [](const terminal::CommandContext&) {
-        resetSettings();
-        terminalOK();
+    terminalRegisterCommand(F("FACTORY.RESET"), [](const terminal::CommandContext& ctx) {
+        factoryReset();
+        terminalOK(ctx);
     });
 
-    #if not SETTINGS_AUTOSAVE
-        terminalRegisterCommand(F("SAVE"), [](const terminal::CommandContext&) {
-            eepromCommit();
-            terminalOK();
-        });
-    #endif
+#if not SETTINGS_AUTOSAVE
+    terminalRegisterCommand(F("SAVE"), [](const terminal::CommandContext& ctx) {
+        eepromCommit();
+        terminalOK(ctx);
+    });
+#endif
+}
 
+#endif
 
+void settingsSetup() {
+#if TERMINAL_SUPPORT
+    _settingsInitCommands();
+#endif
 }

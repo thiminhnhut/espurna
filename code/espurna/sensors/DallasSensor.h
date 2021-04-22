@@ -8,7 +8,6 @@
 
 #pragma once
 
-#include <Arduino.h>
 #include <OneWire.h>
 
 #include <vector>
@@ -33,31 +32,31 @@
 #define DS2406_CHANNEL_ACCESS 0xF5;
 
 // CHANNEL CONTROL BYTE
-// 7    6    5    4    3    2    1    0 
+// 7    6    5    4    3    2    1    0
 // ALR  IM   TOG  IC   CHS1 CHS0 CRC1 CRC0
 // 0    1    0    0    0    1    0    1        0x45
 
-// CHS1 CHS0 Description         
-// 0    0    (not allowed)                 
-// 0    1    channel A only 
-// 1    0    channel B only 
-// 1    1    both channels interleaved 
+// CHS1 CHS0 Description
+// 0    0    (not allowed)
+// 0    1    channel A only
+// 1    0    channel B only
+// 1    1    both channels interleaved
 
 // TOG  IM   CHANNELS       EFFECT
-// 0    0    one channel    Write all bits to the selected channel 
-// 0    1    one channel    Read all bits from the selected channel 
-// 1    0    one channel    Write 8 bits, read 8 bits, write, read, etc. to/from the selected channel 
-// 1    1    one channel    Read 8 bits, write 8 bits, read, write, etc. from/to the selected channel 
-// 0    0    two channels   Repeat: four times (write A, write B) 
-// 0    1    two channels   Repeat: four times (read A, read B) 
-// 1    0    two channels   Four times: (write A, write B), four times: (readA, read B), write, read, etc. 
+// 0    0    one channel    Write all bits to the selected channel
+// 0    1    one channel    Read all bits from the selected channel
+// 1    0    one channel    Write 8 bits, read 8 bits, write, read, etc. to/from the selected channel
+// 1    1    one channel    Read 8 bits, write 8 bits, read, write, etc. from/to the selected channel
+// 0    0    two channels   Repeat: four times (write A, write B)
+// 0    1    two channels   Repeat: four times (read A, read B)
+// 1    0    two channels   Four times: (write A, write B), four times: (readA, read B), write, read, etc.
 // 1    1    two channels   Four times: (read A, read B), four times: (write A, write B), read, write, etc.
 
 // CRC1 CRC0 Description
 // 0    0    CRC disabled (no CRC at all)
 // 0    1    CRC after every byte
 // 1    0    CRC after 8 bytes
-// 1    1    CRC after 32 bytes 
+// 1    1    CRC after 32 bytes
 #define DS2406_CHANNEL_CONTROL_BYTE 0x45;
 
 #define DS2406_STATE_BUF_LEN 7
@@ -76,7 +75,7 @@ class DallasSensor : public BaseSensor {
 
         ~DallasSensor() {
             if (_wire) delete _wire;
-            if (_previous != GPIO_NONE) gpioReleaseLock(_previous);
+            gpioUnlock(_gpio);
         }
 
         // ---------------------------------------------------------------------
@@ -103,9 +102,12 @@ class DallasSensor : public BaseSensor {
             if (!_dirty) return;
 
             // Manage GPIO lock
-            if (_previous != GPIO_NONE) gpioReleaseLock(_previous);
+            if (_previous != GPIO_NONE) {
+                gpioUnlock(_previous);
+            }
+
             _previous = GPIO_NONE;
-            if (!gpioGetLock(_gpio)) {
+            if (!gpioLock(_gpio)) {
                 _error = SENSOR_ERROR_GPIO_USED;
                 return;
             }
@@ -125,7 +127,7 @@ class DallasSensor : public BaseSensor {
 
             // Check connection
             if (_count == 0) {
-                gpioReleaseLock(_gpio);
+                gpioUnlock(_gpio);
             } else {
                 _previous = _gpio;
             }
@@ -165,7 +167,7 @@ class DallasSensor : public BaseSensor {
                             _devices[index].data[0] = _devices[index].data[0] + 1;
                             return;
                         }
-                        
+
                         _wire->select(_devices[index].address);
 
                         data[0] = DS2406_CHANNEL_ACCESS;
@@ -261,8 +263,8 @@ class DallasSensor : public BaseSensor {
                     return MAGNITUDE_DIGITAL;
                 } else {
                     return MAGNITUDE_TEMPERATURE;
-                }   
-            } 
+                }
+            }
             return MAGNITUDE_NONE;
         }
 
